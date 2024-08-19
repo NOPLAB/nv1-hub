@@ -1,0 +1,11 @@
+[package]
+name = "nv1-hub-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-graphics = "0.8.1"
+
+[features]
+no_std = []
+default = []

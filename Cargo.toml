@@ -1,0 +1,5 @@
+[workspace]
+resolver = "2"
+members = ["nv1-hub-stm32", "nv1-hub-ui", "nv1-hub-ui-tester"]
+
+[workspace.dependencies]
