@@ -25,11 +25,14 @@ pub enum HubUiEvent {
 
 pub struct HubUiOptions {
     pub display_size: Size,
+    pub menu_vertical_num: u8,
 }
 
 pub struct HubUi<'a, T> {
     display: &'a mut T,
     options: HubUiOptions,
+    menu_index: u8,
+    element_index: u8,
 }
 
 impl<'a, T> HubUi<'a, T>
@@ -38,7 +41,12 @@ where
     <T as DrawTarget>::Error: Debug,
 {
     pub fn new(display: &'a mut T, options: HubUiOptions) -> Self {
-        HubUi { display, options }
+        HubUi {
+            display,
+            options,
+            menu_index: 0,
+            element_index: 0,
+        }
     }
 
     pub fn update(&mut self, event: &HubUiEvent) -> &mut T {

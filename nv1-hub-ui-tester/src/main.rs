@@ -23,7 +23,11 @@ fn main() -> anyhow::Result<()> {
         .build();
     let mut window = Window::new("SSD1306", &output_settings);
 
-    let mut ui = HubUi::new(&mut display);
+    let options = nv1_hub_ui::HubUiOptions {
+        display_size: Size::new(128, 64),
+        menu_vertical_num: 3,
+    };
+    let mut ui = HubUi::new(&mut display, options);
     let mut ui_event = HubUiEvent::None;
 
     'running: loop {

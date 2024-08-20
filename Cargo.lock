@@ -63,6 +63,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
+name = "bbqueue"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3baa8859d1a4c7411039a75c0599a4640ef1c9a8fc811e4325b00e6cfe0a55"
+
+[[package]]
 name = "bindgen"
 version = "0.69.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -108,6 +114,17 @@ name = "bitflags"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
+
+[[package]]
+name = "bno08x-rvc"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cd3fc8a125738443c48e0a71c352d34a316f89511af8ffacd2c19a8bb88a0f0"
+dependencies = [
+ "bbqueue",
+ "postcard",
+ "serde",
+]
 
 [[package]]
 name = "bxcan"
@@ -173,6 +190,15 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.51"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb1e43aa7fd152b1f968787f7dbcdeb306d1867ff373c69955211876c053f91a"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -1056,6 +1082,8 @@ dependencies = [
 name = "nv1-hub-stm32"
 version = "0.1.0"
 dependencies = [
+ "bbqueue",
+ "bno08x-rvc",
  "corepack",
  "corncobs",
  "cortex-m",
@@ -1094,6 +1122,7 @@ dependencies = [
  "embedded-graphics",
  "embedded-graphics-simulator",
  "nv1-hub-ui",
+ "sdl2",
 ]
 
 [[package]]
@@ -1174,6 +1203,22 @@ dependencies = [
  "deflate",
  "miniz_oxide 0.3.7",
 ]
+
+[[package]]
+name = "postcard"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a25c0b0ae06fcffe600ad392aabfa535696c8973f2253d9ac83171924c58a858"
+dependencies = [
+ "postcard-cobs",
+ "serde",
+]
+
+[[package]]
+name = "postcard-cobs"
+version = "0.1.5-pre"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c68cb38ed13fd7bc9dd5db8f165b7c8d9c1a315104083a2b10f11354c2af97f"
 
 [[package]]
 name = "prettyplease"
@@ -1341,6 +1386,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3586be2cf6c0a8099a79a12b4084357aa9b3e0b0d7980e3b67aaf7a9d55f9f0"
 dependencies = [
  "cfg-if",
+ "cmake",
  "libc",
  "version-compare",
 ]
