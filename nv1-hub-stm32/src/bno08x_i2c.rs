@@ -4,15 +4,21 @@ use core::ptr::{null, null_mut};
 
 use alloc::rc::Rc;
 use defmt::{info, println};
+use embassy_futures::block_on;
 use embassy_stm32::gpio::{Input, Output, Pin};
 use embassy_stm32::i2c::I2c;
 use embassy_time::{Instant, Timer};
+use sh2::sh2_ProductId_t;
+use sh2::sh2_ProductIds_t;
+use sh2::sh2_getProdIds;
 use sh2::{
     sh2_AsyncEvent_t, sh2_Hal_t, sh2_RotationVector_t, sh2_SensorConfig, sh2_SensorEvent_t,
     sh2_SensorId_e_SH2_GAME_ROTATION_VECTOR, sh2_SensorId_e_SH2_GYRO_INTEGRATED_RV, sh2_SensorId_t,
     sh2_SensorValue__bindgen_ty_1, sh2_SensorValue_t, sh2_decodeSensorEvent, sh2_open, sh2_service,
     sh2_setSensorCallback, sh2_setSensorConfig, SH2_OK,
 };
+
+use crate::fmt::error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Bno08xI2cAddress {
@@ -21,6 +27,7 @@ enum Bno08xI2cAddress {
 }
 
 #[repr(C)]
+#[no_mangle]
 struct Bno08xI2cSh2Hal<'a, Instance, TXDMA, RXDMA, IntPin>
 where
     Instance: embassy_stm32::i2c::Instance,
@@ -59,7 +66,7 @@ where
     IntPin: Pin,
 {
     const BNO08X_ADDRESS: Bno08xI2cAddress = Bno08xI2cAddress::B;
-    const MAXBUFFERSIZE: usize = 32;
+    const MAXBUFFERSIZE: usize = 512;
 
     pub fn new(
         i2c: I2c<'a, Instance, TXDMA, RXDMA>,
@@ -159,16 +166,16 @@ where
     }
 
     extern "C" fn i2c_hal_open(s: *mut sh2_Hal_t) -> i32 {
-        let softreset_pkt = [5, 0, 1, 0, 1];
         let hal = unsafe { &*(s as *mut Bno08xI2cSh2Hal<'a, Instance, TXDMA, RXDMA, IntPin>) };
+        let mut i2c = hal.i2c.borrow_mut();
 
         while hal.gpio_int.borrow().is_low() {
-            info!("Waiting for INT pin to go high");
+            info!("Waiting INT pin");
         }
 
-        let mut i2c = hal.i2c.borrow_mut();
+        let soft_reset_pkt = [5, 0, 1, 0, 1];
         for _ in 0..1000 {
-            match i2c.blocking_write(Self::BNO08X_ADDRESS as u8, &softreset_pkt) {
+            match i2c.blocking_write(Self::BNO08X_ADDRESS as u8, &soft_reset_pkt) {
                 Ok(_) => {
                     info!("BNO08x - Soft reset successful");
                     return 0;
@@ -197,19 +204,25 @@ where
         let mut i2c = hal.i2c.borrow_mut();
 
         while hal.gpio_int.borrow().is_low() {
-            info!("Waiting for INT pin to go high");
+            info!("Waiting for INT pin");
         }
 
         let mut header = [0u8; 4];
-
-        if i2c
-            .blocking_read(Self::BNO08X_ADDRESS as u8, &mut header)
-            .is_err()
-        {
-            return 0;
+        match i2c.blocking_read(Self::BNO08X_ADDRESS as u8, &mut header) {
+            Ok(_) => {}
+            Err(err) => {
+                info!("Error reading header from I2C");
+                info!("Error: {:?}", err);
+                if err != embassy_stm32::i2c::Error::Nack {
+                    return 0;
+                }
+            }
         }
 
-        let packet_size = (header[0] as u16) | ((header[1] as u16) << 8) & !0x8000;
+        info!("Header: {:?}", header);
+
+        let mut packet_size = (header[0] as u16) | ((header[1] as u16) << 8);
+        packet_size &= !0x8000;
 
         let i2c_buffer_max = Self::MAXBUFFERSIZE;
 
@@ -223,6 +236,10 @@ where
         let mut cargo_read_amount;
         let mut first_read = true;
 
+        info!("packet_size: {}", packet_size);
+
+        let buffer_p_orig = buffer_p;
+
         while cargo_remaining > 0 {
             if first_read {
                 read_size = core::cmp::min(i2c_buffer_max, cargo_remaining as usize);
@@ -230,11 +247,17 @@ where
                 read_size = core::cmp::min(i2c_buffer_max, cargo_remaining as usize + 4);
             }
 
-            if i2c
-                .blocking_read(Self::BNO08X_ADDRESS as u8, &mut i2c_buffer[..read_size])
-                .is_err()
-            {
-                return 0;
+            info!("read_size: {}", read_size);
+
+            match i2c.blocking_read(Self::BNO08X_ADDRESS as u8, &mut i2c_buffer[..read_size]) {
+                Ok(_) => {}
+                Err(err) => {
+                    info!("Error reading from I2C");
+                    info!("Error: {:?}", err);
+                    if err != embassy_stm32::i2c::Error::Nack {
+                        return 0;
+                    }
+                }
             }
 
             if first_read {
@@ -262,12 +285,18 @@ where
             cargo_remaining -= cargo_read_amount;
         }
 
+        for i in 0..packet_size as usize {
+            info!("{}: {}", i, unsafe { *buffer_p_orig.add(i) });
+        }
+
         packet_size as i32
     }
 
     extern "C" fn i2c_hal_write(s: *mut sh2_Hal_t, buffer: *mut u8, len: u32) -> i32 {
         let hal = unsafe { &*(s as *mut Bno08xI2cSh2Hal<'a, Instance, TXDMA, RXDMA, IntPin>) };
         let mut i2c = hal.i2c.borrow_mut();
+
+        info!("hal_write");
 
         let i2c_buffer_max = Self::MAXBUFFERSIZE;
 
@@ -291,35 +320,37 @@ where
     async fn init(&mut self, sensor_id: i32) -> bool {
         self.hal_hardware_reset().await;
 
-        let hal_p = self.hal.as_mut().unwrap()
+        Timer::after_millis(100).await;
+
+        let sh2_hal_p = self.hal.as_mut().unwrap()
             as *mut Bno08xI2cSh2Hal<'a, Instance, TXDMA, RXDMA, IntPin>
             as *mut sh2_Hal_t;
 
-        let status = unsafe { sh2_open(hal_p, Some(Self::hal_callback), null_mut()) };
+        let status = unsafe { sh2_open(sh2_hal_p, Some(Self::hal_callback), null_mut()) };
         if status != 0 {
             return false;
         }
 
-        // let mut prod_ids = sh2_ProductIds_t {
-        //     entry: [sh2_ProductId_t {
-        //         resetCause: 0,
-        //         swVersionMajor: 0,
-        //         swVersionMinor: 0,
-        //         swPartNumber: 0,
-        //         swBuildNumber: 0,
-        //         swVersionPatch: 0,
-        //         reserved0: 0,
-        //         reserved1: 0,
-        //     }; 5],
-        //     numEntries: 0,
-        // };
+        let mut prod_ids = sh2_ProductIds_t {
+            entry: [sh2_ProductId_t {
+                resetCause: 0,
+                swVersionMajor: 0,
+                swVersionMinor: 0,
+                swPartNumber: 0,
+                swBuildNumber: 0,
+                swVersionPatch: 0,
+                reserved0: 0,
+                reserved1: 0,
+            }; 5],
+            numEntries: 0,
+        };
 
-        // let status = unsafe { sh2_getProdIds(&mut prod_ids) };
-        // if status as u32 != SH2_OK {
-        //     info!("Error getting product ids");
-        //     info!("Status: {}", status);
-        //     return false;
-        // }
+        let status = unsafe { sh2_getProdIds(&mut prod_ids) };
+        if status as u32 != SH2_OK {
+            info!("Error getting product ids");
+            info!("Status: {}", status);
+            return false;
+        }
 
         unsafe {
             sh2_setSensorCallback(

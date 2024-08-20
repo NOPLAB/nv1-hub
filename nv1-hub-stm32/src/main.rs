@@ -15,16 +15,25 @@ static HEAP: Heap = Heap::empty();
 
 use embassy_stm32::{
     bind_interrupts,
+    dma::NoDma,
     gpio::{Input, Level, Output, Pull},
     i2c::{self, I2c},
     peripherals,
     time::Hertz,
     usart::{self, Config, Uart},
 };
+use embedded_graphics::Drawable;
+use embedded_graphics::{
+    pixelcolor::BinaryColor,
+    prelude::{Dimensions, Point, Primitive, Size},
+    primitives::{PrimitiveStyle, Rectangle, StyledDrawable},
+};
 use libm::{asinf, atan2f};
 
+use nv1_hub_ui::{HubUi, HubUiEvent, HubUiOptions};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306};
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
@@ -35,6 +44,8 @@ bind_interrupts!(struct Irqs {
     UART4 => usart::InterruptHandler<peripherals::UART4>;
     I2C1_EV => i2c::EventInterruptHandler<peripherals::I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<peripherals::I2C1>;
+    I2C3_EV => i2c::EventInterruptHandler<peripherals::I2C3>;
+    I2C3_ER => i2c::ErrorInterruptHandler<peripherals::I2C3>;
 });
 
 #[repr(C)]
@@ -85,7 +96,35 @@ async fn main(_spawner: Spawner) {
     .unwrap();
 
     let mut config = i2c::Config::default();
-    config.timeout = Duration::from_millis(10);
+    config.timeout = Duration::from_millis(100);
+
+    let ssd1306_i2c = I2c::new(
+        p.I2C3,
+        p.PA8,
+        p.PC9,
+        Irqs,
+        NoDma,
+        NoDma,
+        Hertz::khz(400),
+        config,
+    );
+
+    let ssd1306_interface = I2CDisplayInterface::new(ssd1306_i2c);
+    let mut ssd1306 = Ssd1306::new(
+        ssd1306_interface,
+        DisplaySize128x64,
+        ssd1306::prelude::DisplayRotation::Rotate0,
+    )
+    .into_buffered_graphics_mode();
+    ssd1306.init().unwrap();
+
+    let ui_options = HubUiOptions {
+        display_size: Size::new(128, 64),
+    };
+    let mut ui = HubUi::new(&mut ssd1306, ui_options);
+    let _ = ui.update(&HubUiEvent::None);
+
+    ssd1306.flush().unwrap();
 
     let i2c = I2c::new(
         p.I2C1,
@@ -94,13 +133,13 @@ async fn main(_spawner: Spawner) {
         Irqs,
         p.DMA1_CH6,
         p.DMA1_CH0,
-        Hertz(400_000),
+        Hertz::khz(400),
         config,
     );
 
     let gpio_reset = Output::new(p.PA0, Level::High, embassy_stm32::gpio::Speed::Low);
     let gpio_int = Input::new(p.PA4, Pull::Up);
-    let _ = Output::new(p.PA1, Level::High, embassy_stm32::gpio::Speed::Low);
+    let _gpio_boot = Output::new(p.PA1, Level::High, embassy_stm32::gpio::Speed::Low);
 
     let mut bno08x = Bno08xI2c::new(i2c, gpio_reset, gpio_int);
 
