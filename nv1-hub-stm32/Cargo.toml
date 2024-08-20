@@ -40,6 +40,8 @@ ssd1306 = "0.8.4"
 embedded-graphics = "0.8.1"
 corepack = { version = "0.4.1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+bno08x-rvc = "0.1.2"
+bbqueue = "0.5.1"
 
 [[bin]]
 name = "nv1-hub-stm32"
