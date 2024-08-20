@@ -8,16 +8,12 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[cfg(not(feature = "no_std"))]
 fn main() -> anyhow::Result<()> {
-    use embedded_graphics::{
-        mono_font::{ascii::FONT_6X9, MonoTextStyle},
-        pixelcolor::BinaryColor,
-        prelude::*,
-        primitives::{Circle, Line, PrimitiveStyle, Rectangle},
-        text::Text,
-    };
+    use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
     use embedded_graphics_simulator::{
-        BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent, Window,
+        sdl2::Keycode, BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent,
+        Window,
     };
+    use nv1_hub_ui::{EventKey, HubUi, HubUiEvent};
 
     println!("Hello, world!");
 
@@ -27,37 +23,29 @@ fn main() -> anyhow::Result<()> {
         .build();
     let mut window = Window::new("SSD1306", &output_settings);
 
-    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-    let text_style = MonoTextStyle::new(&FONT_6X9, BinaryColor::On);
-
-    Circle::new(Point::new(72, 8), 48)
-        .into_styled(line_style)
-        .draw(&mut display)?;
-
-    Line::new(Point::new(48, 16), Point::new(8, 16))
-        .into_styled(line_style)
-        .draw(&mut display)?;
-
-    Line::new(Point::new(48, 16), Point::new(64, 32))
-        .into_styled(line_style)
-        .draw(&mut display)?;
-
-    Rectangle::new(Point::new(79, 15), Size::new(34, 34))
-        .into_styled(line_style)
-        .draw(&mut display)?;
-
-    Text::new("Hello World!", Point::new(5, 5), text_style).draw(&mut display)?;
+    let mut ui = HubUi::new(&mut display);
+    let mut ui_event = HubUiEvent::None;
 
     'running: loop {
-        window.update(&display);
+        let mut display = ui.update(&ui_event);
+        window.update(&mut display);
 
         for event in window.events() {
             match event {
                 SimulatorEvent::Quit => break 'running,
                 SimulatorEvent::KeyDown { keycode, .. } => {
                     println!("Key pressed: {:?}", keycode);
+
+                    match keycode {
+                        Keycode::Up => ui_event = HubUiEvent::KeyDown(EventKey::Up),
+                        Keycode::Down => ui_event = HubUiEvent::KeyDown(EventKey::Down),
+                        Keycode::Return => ui_event = HubUiEvent::KeyDown(EventKey::Enter),
+                        _ => {}
+                    }
                 }
-                _ => {}
+                _ => {
+                    ui_event = HubUiEvent::None;
+                }
             }
         }
     }
