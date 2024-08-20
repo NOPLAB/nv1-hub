@@ -2,5 +2,6 @@
 
 [toolchain]
 #channel = "1.80"
+channel = "nightly"
 components = ["rust-src", "rustfmt"]
 targets = ["thumbv7em-none-eabi"]

@@ -36,6 +36,10 @@ panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
 pid = "4.0.0"
 sh2 = "0.1.0"
 nv1-hub-ui = { path = "../nv1-hub-ui", features = ["no_std"] }
+ssd1306 = "0.8.4"
+embedded-graphics = "0.8.1"
+corepack = { version = "0.4.1", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
 
 [[bin]]
 name = "nv1-hub-stm32"
