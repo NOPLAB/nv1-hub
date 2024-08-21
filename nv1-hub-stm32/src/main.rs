@@ -6,10 +6,11 @@ mod omni;
 
 extern crate alloc;
 
-use core::borrow::Borrow;
+use core::{borrow::Borrow, cell::RefCell};
 
 use alloc::vec::Vec;
 use defmt::error;
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
 use embedded_alloc::Heap;
 
@@ -69,6 +70,16 @@ union MdData {
 }
 
 static BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
+
+static G_MSG_PACK_RX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::HubMsgPackRx>> =
+    Mutex::new(RefCell::new(nv1_msg::HubMsgPackRx {
+        vel: nv1_msg::Velocity {
+            linear_x: 0.0,
+            linear_y: 0.0,
+            angular_z: 0.0,
+        },
+        kick: false,
+    }));
 
 fn quaternion_to_euler_angle(q: &sh2::sh2_RotationVector_t) -> (f32, f32, f32) {
     let q0 = q.real;
@@ -164,9 +175,6 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    let msgpack_default = corepack::to_bytes(nv1_msg::HubMsgPackRx::default()).unwrap();
-    let cobs_decoded_data_size: usize = msgpack_default.len();
-
     let mut delay = Delay;
     let mut adc1 = Adc::new(p.ADC1, &mut delay);
     adc1.set_sample_time(embassy_stm32::adc::SampleTime::Cycles3);
@@ -256,7 +264,7 @@ async fn main(spawner: Spawner) {
     let mut yaw = 0.0;
 
     let mut angle_pid = pid::Pid::new(0.0, 100.0); // TODO
-    angle_pid.p(1.0, 100.0);
+    angle_pid.p(1.2, 100.0);
 
     const WHEEL_R: f32 = 25.0 / 1000.0;
     const THREAD: f32 = 108.0 / 1000.0;
@@ -265,14 +273,9 @@ async fn main(spawner: Spawner) {
     let wheel_calc3 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
     let wheel_calc4 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
 
-    let mut motor_speed = MotorSpeed {
-        motor1: 0.0,
-        motor2: 0.0,
-        motor3: 0.0,
-        motor4: 0.0,
-    };
+    let mut motor_speed;
 
-    Timer::after_millis(100).await;
+    spawner.spawn(uart_task(uart_jetson)).unwrap();
 
     info!("nv1-hub initialized");
 
@@ -286,80 +289,6 @@ async fn main(spawner: Spawner) {
                 // info!("Yaw: {}", yaw);
             })
             .unwrap();
-
-        let mut buf = [0u8; 57];
-        match uart_jetson.read(&mut buf).await {
-            Ok(_) => {
-                let mut cobs_decoded_buf = [0; 64];
-                match corncobs::decode_buf(&buf, &mut cobs_decoded_buf) {
-                    Ok(size) => {
-                        if size != cobs_decoded_data_size {
-                            info!("Invalid data size: {}", size);
-                            continue;
-                        }
-
-                        let msgpack_buf = corepack::from_bytes::<nv1_msg::HubMsgPackRx>(
-                            &cobs_decoded_buf[0..cobs_decoded_data_size],
-                        )
-                        .unwrap();
-
-                        info!("Linear X: {}", msgpack_buf.vel.linear_x);
-                        info!("Linear Y: {}", msgpack_buf.vel.linear_y);
-                        info!("Angular Z: {}", msgpack_buf.vel.angular_z);
-
-                        angle_pid.setpoint(msgpack_buf.vel.angular_z);
-
-                        let angle_pid_output = angle_pid.next_control_output(yaw);
-
-                        let motor1 = wheel_calc1.calculate(
-                            msgpack_buf.vel.linear_x / 3.0,
-                            msgpack_buf.vel.linear_y / 3.0,
-                            angle_pid_output.output,
-                        );
-                        let motor2 = wheel_calc2.calculate(
-                            msgpack_buf.vel.linear_x / 3.0,
-                            msgpack_buf.vel.linear_y / 3.0,
-                            angle_pid_output.output,
-                        );
-                        let motor3 = wheel_calc3.calculate(
-                            msgpack_buf.vel.linear_x / 3.0,
-                            msgpack_buf.vel.linear_y / 3.0,
-                            angle_pid_output.output,
-                        );
-                        let motor4 = wheel_calc4.calculate(
-                            msgpack_buf.vel.linear_x / 3.0,
-                            msgpack_buf.vel.linear_y / 3.0,
-                            angle_pid_output.output,
-                        );
-
-                        motor_speed = MotorSpeed {
-                            motor1,
-                            motor2,
-                            motor3,
-                            motor4,
-                        };
-                    }
-                    Err(err) => {
-                        info!("Failed to decode data");
-                        info!("Data: {:?}", buf);
-                        match err {
-                            corncobs::CobsError::Truncated => info!("Truncated"),
-                            corncobs::CobsError::Corrupt => info!("Corrupt"),
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                if err == usart::Error::Overrun {
-                    info!("Overrun");
-                    continue;
-                } else {
-                    info!("Failed to read data");
-                    info!("Error: {:?}", err);
-                    continue;
-                }
-            }
-        };
 
         let mut adc_line = [0u16; 32];
         let mut adc_ir = [0u16; 16];
@@ -429,6 +358,39 @@ async fn main(spawner: Spawner) {
         // info!("Line X: {}, Line Y: {}", line_x, line_y);
         // info!("IR X: {}, IR Y: {}", ir_x, ir_y);
 
+        let msgpack = G_MSG_PACK_RX.lock().await.get_mut().clone();
+        angle_pid.setpoint(msgpack.vel.angular_z);
+
+        let angle_pid_output = angle_pid.next_control_output(yaw);
+
+        let motor1 = wheel_calc1.calculate(
+            msgpack.vel.linear_x,
+            msgpack.vel.linear_y,
+            angle_pid_output.output,
+        );
+        let motor2 = wheel_calc2.calculate(
+            msgpack.vel.linear_x,
+            msgpack.vel.linear_y,
+            angle_pid_output.output,
+        );
+        let motor3 = wheel_calc3.calculate(
+            msgpack.vel.linear_x,
+            msgpack.vel.linear_y,
+            angle_pid_output.output,
+        );
+        let motor4 = wheel_calc4.calculate(
+            msgpack.vel.linear_x,
+            msgpack.vel.linear_y,
+            angle_pid_output.output,
+        );
+
+        motor_speed = MotorSpeed {
+            motor1,
+            motor2,
+            motor3,
+            motor4,
+        };
+
         if gpio_ui_toggle.is_high() {
             motor_speed = MotorSpeed {
                 motor1: 0.0,
@@ -449,12 +411,65 @@ async fn main(spawner: Spawner) {
                 info!("UART write error: {:?}", e);
             }
         };
+    }
+}
 
-        // uart_jetson
-        //     .write("Hello, World!\n".as_bytes())
-        //     .await
-        //     .unwrap();
+#[embassy_executor::task]
+async fn uart_task(
+    mut uart_jetson: Uart<
+        'static,
+        peripherals::USART3,
+        peripherals::DMA1_CH3,
+        peripherals::DMA1_CH1,
+    >,
+) {
+    const RX_DATA_SIZE: usize = 57;
+    let msgpack_default = corepack::to_bytes(nv1_msg::HubMsgPackRx::default()).unwrap();
+    let msgpack_data_len: usize = msgpack_default.len();
 
-        // Timer::after_millis(10).await;
+    loop {
+        let mut buf = [0u8; RX_DATA_SIZE];
+        match uart_jetson.read(&mut buf).await {
+            Ok(_) => {
+                let mut cobs_decoded_buf = [0; 64];
+                match corncobs::decode_buf(&buf, &mut cobs_decoded_buf) {
+                    Ok(size) => {
+                        if size != msgpack_data_len {
+                            info!("Invalid data size: {}", size);
+                            continue;
+                        }
+
+                        let msgpack = corepack::from_bytes::<nv1_msg::HubMsgPackRx>(
+                            &cobs_decoded_buf[0..msgpack_data_len],
+                        )
+                        .unwrap();
+
+                        info!("Linear X: {}", msgpack.vel.linear_x);
+                        info!("Linear Y: {}", msgpack.vel.linear_y);
+                        info!("Angular Z: {}", msgpack.vel.angular_z);
+
+                        G_MSG_PACK_RX.lock().await.get_mut().vel = msgpack.vel
+                    }
+                    Err(err) => {
+                        info!("Failed to decode data");
+                        info!("Data: {:?}", buf);
+                        match err {
+                            corncobs::CobsError::Truncated => info!("Truncated"),
+                            corncobs::CobsError::Corrupt => info!("Corrupt"),
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                if err == usart::Error::Overrun {
+                    info!("Overrun");
+                    continue;
+                } else {
+                    info!("Failed to read data");
+                    info!("Error: {:?}", err);
+                    continue;
+                }
+            }
+        };
     }
 }
