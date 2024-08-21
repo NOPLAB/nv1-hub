@@ -1,16 +1,14 @@
 #![no_std]
 #![no_main]
 
-mod bno08x_i2c;
 mod fmt;
-mod jetson_msgpack;
 mod omni;
 
 extern crate alloc;
 
 use core::borrow::Borrow;
 
-use bno08x_i2c::Bno08xI2c;
+use alloc::vec::Vec;
 use defmt::error;
 use embassy_time::{Duration, Timer};
 use embedded_alloc::Heap;
@@ -20,28 +18,23 @@ static HEAP: Heap = Heap::empty();
 
 use bbqueue::BBBuffer;
 use embassy_stm32::{
+    adc::Adc,
     bind_interrupts,
     dma::NoDma,
     gpio::{Input, Level, Output, Pull},
     i2c::{self, I2c},
-    pac::common::W,
     peripherals,
     time::Hertz,
     usart::{self, Config, Uart},
 };
-use embedded_graphics::Drawable;
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::{Dimensions, Point, Primitive, Size},
-    primitives::{PrimitiveStyle, Rectangle, StyledDrawable},
-};
-use jetson_msgpack::JetsonMsgPack;
-use libm::{asinf, atan2f};
+use embassy_time::Delay;
+use embedded_graphics::prelude::Size;
+use libm::{asinf, atan2f, cosf, powf, sinf, sqrtf};
+use num_traits::{AsPrimitive, Num};
 use nv1_hub_ui::{HubUi, HubUiEvent, HubUiOptions};
 
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
-use serde::Serialize;
 use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306};
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
@@ -90,8 +83,39 @@ fn quaternion_to_euler_angle(q: &sh2::sh2_RotationVector_t) -> (f32, f32, f32) {
     (roll, pitch, yaw)
 }
 
+fn generate_adc_vec<T>(sin: &mut [T], cos: &mut [T], offset: f32, one_angle: f32, mul: f32)
+where
+    f32: AsPrimitive<T>,
+    T: Num + Copy + 'static,
+{
+    for i in 0..sin.len() {
+        sin[i] = (sinf(i as f32 * one_angle + offset) * mul).as_();
+        cos[i] = (cosf(i as f32 * one_angle + offset) * mul).as_();
+    }
+}
+
+fn calculate_adc_vec<T>(adc: &[T], adc_sin: &[T], adc_cos: &[T], mul: T) -> (f32, f32)
+where
+    T: Num + Copy + 'static + AsPrimitive<f32>,
+{
+    let mut sum_x: f32 = 0.0;
+    let mut sum_y: f32 = 0.0;
+
+    for i in 0..adc.len() {
+        sum_x = sum_x + (adc_cos[i] * adc[i]).as_();
+        sum_y = sum_y + (adc_sin[i] * adc[i]).as_();
+    }
+
+    let norm = sqrtf(powf(sum_x / adc.len() as f32, 2.0) + powf(sum_y / adc.len() as f32, 2.0));
+
+    (
+        sum_x / adc.len() as f32 / norm,
+        sum_y / adc.len() as f32 / norm,
+    )
+}
+
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     {
         use core::mem::MaybeUninit;
         const HEAP_SIZE: usize = 1024;
@@ -99,7 +123,7 @@ async fn main(_spawner: Spawner) {
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
 
-    let p = embassy_stm32::init(Default::default());
+    let mut p = embassy_stm32::init(Default::default());
 
     let mut uart3_config = Config::default();
     uart3_config.baudrate = 115200;
@@ -140,12 +164,51 @@ async fn main(_spawner: Spawner) {
     )
     .unwrap();
 
-    let msgpack_default = corepack::to_bytes(JetsonMsgPack::default()).unwrap();
+    let msgpack_default = corepack::to_bytes(nv1_msg::HubMsgPackRx::default()).unwrap();
     let cobs_decoded_data_size: usize = msgpack_default.len();
+
+    let mut delay = Delay;
+    let mut adc1 = Adc::new(p.ADC1, &mut delay);
+    adc1.set_sample_time(embassy_stm32::adc::SampleTime::Cycles3);
+
+    let mut line_s0 = Output::new(p.PB12, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut line_s1 = Output::new(p.PB13, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut line_s2 = Output::new(p.PB14, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut line_s3 = Output::new(p.PB15, Level::Low, embassy_stm32::gpio::Speed::High);
+
+    let mut ir_s0 = Output::new(p.PB0, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut ir_s1 = Output::new(p.PB1, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut ir_s2 = Output::new(p.PB4, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut ir_s3 = Output::new(p.PB5, Level::Low, embassy_stm32::gpio::Speed::High);
+
+    let mut adc_line_sin = [0.0f32; 32];
+    let mut adc_line_cos = [0.0f32; 32];
+
+    generate_adc_vec(
+        &mut adc_line_sin,
+        &mut adc_line_cos,
+        (90 as f32).to_radians(),
+        -((360.0 / 32.0) as f32).to_radians(),
+        1.0,
+    );
+
+    info!("ADC Line Sin: {:?}", adc_line_sin);
+
+    let mut adc_ir_sin = [0.0f32; 16];
+    let mut adc_ir_cos = [0.0f32; 16];
+
+    generate_adc_vec(
+        &mut adc_ir_sin,
+        &mut adc_ir_cos,
+        (90 as f32).to_radians(),
+        -((360.0 / 16.0) as f32).to_radians(),
+        1.0,
+    );
+
+    let mut gpio_ui_toggle = Input::new(p.PC12, Pull::None);
 
     let mut config = i2c::Config::default();
     config.timeout = Duration::from_millis(100);
-
     let ssd1306_i2c = I2c::new(
         p.I2C3,
         p.PA8,
@@ -193,14 +256,14 @@ async fn main(_spawner: Spawner) {
     let mut yaw = 0.0;
 
     let mut angle_pid = pid::Pid::new(0.0, 100.0); // TODO
-    angle_pid.p(3.0, 100.0);
+    angle_pid.p(1.0, 100.0);
 
-    const WHEEL_R: f32 = 1.0;
-    const THREAD: f32 = 1.0;
-    let wheel_calc1 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
-    let wheel_calc2 = omni::OmniWheel::new(135.0_f32.to_radians(), WHEEL_R, THREAD);
-    let wheel_calc3 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
-    let wheel_calc4 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
+    const WHEEL_R: f32 = 25.0 / 1000.0;
+    const THREAD: f32 = 108.0 / 1000.0;
+    let wheel_calc1 = omni::OmniWheel::new(135.0_f32.to_radians(), WHEEL_R, THREAD);
+    let wheel_calc2 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
+    let wheel_calc3 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
+    let wheel_calc4 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
 
     let mut motor_speed = MotorSpeed {
         motor1: 0.0,
@@ -209,30 +272,171 @@ async fn main(_spawner: Spawner) {
         motor4: 0.0,
     };
 
+    Timer::after_millis(100).await;
+
     info!("nv1-hub initialized");
 
     loop {
-        info!("Instant: {:?}", embassy_time::Instant::now().as_millis());
         let mut buf = [0u8; 19];
         uart_bno.read(&mut buf).await.unwrap();
         proc.process_slice(&buf).unwrap();
         parser
             .worker(|frame| {
                 yaw = (frame.as_pretty_frame().yaw as f32).to_radians();
-                info!("Yaw: {}", yaw);
+                // info!("Yaw: {}", yaw);
             })
             .unwrap();
 
-        let pid_output = angle_pid.next_control_output(yaw);
+        let mut buf = [0u8; 57];
+        match uart_jetson.read(&mut buf).await {
+            Ok(_) => {
+                let mut cobs_decoded_buf = [0; 64];
+                match corncobs::decode_buf(&buf, &mut cobs_decoded_buf) {
+                    Ok(size) => {
+                        if size != cobs_decoded_data_size {
+                            info!("Invalid data size: {}", size);
+                            continue;
+                        }
 
-        // info!("T: {}, U: {}", yaw, pid_output.output);
+                        let msgpack_buf = corepack::from_bytes::<nv1_msg::HubMsgPackRx>(
+                            &cobs_decoded_buf[0..cobs_decoded_data_size],
+                        )
+                        .unwrap();
 
-        let motor_speed = MotorSpeed {
-            motor1: -pid_output.output,
-            motor2: -pid_output.output,
-            motor3: -pid_output.output,
-            motor4: -pid_output.output,
+                        info!("Linear X: {}", msgpack_buf.vel.linear_x);
+                        info!("Linear Y: {}", msgpack_buf.vel.linear_y);
+                        info!("Angular Z: {}", msgpack_buf.vel.angular_z);
+
+                        angle_pid.setpoint(msgpack_buf.vel.angular_z);
+
+                        let angle_pid_output = angle_pid.next_control_output(yaw);
+
+                        let motor1 = wheel_calc1.calculate(
+                            msgpack_buf.vel.linear_x / 3.0,
+                            msgpack_buf.vel.linear_y / 3.0,
+                            angle_pid_output.output,
+                        );
+                        let motor2 = wheel_calc2.calculate(
+                            msgpack_buf.vel.linear_x / 3.0,
+                            msgpack_buf.vel.linear_y / 3.0,
+                            angle_pid_output.output,
+                        );
+                        let motor3 = wheel_calc3.calculate(
+                            msgpack_buf.vel.linear_x / 3.0,
+                            msgpack_buf.vel.linear_y / 3.0,
+                            angle_pid_output.output,
+                        );
+                        let motor4 = wheel_calc4.calculate(
+                            msgpack_buf.vel.linear_x / 3.0,
+                            msgpack_buf.vel.linear_y / 3.0,
+                            angle_pid_output.output,
+                        );
+
+                        motor_speed = MotorSpeed {
+                            motor1,
+                            motor2,
+                            motor3,
+                            motor4,
+                        };
+                    }
+                    Err(err) => {
+                        info!("Failed to decode data");
+                        info!("Data: {:?}", buf);
+                        match err {
+                            corncobs::CobsError::Truncated => info!("Truncated"),
+                            corncobs::CobsError::Corrupt => info!("Corrupt"),
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                if err == usart::Error::Overrun {
+                    info!("Overrun");
+                    continue;
+                } else {
+                    info!("Failed to read data");
+                    info!("Error: {:?}", err);
+                    continue;
+                }
+            }
         };
+
+        let mut adc_line = [0u16; 32];
+        let mut adc_ir = [0u16; 16];
+        for i in 0..16 {
+            if i & 0b0001 != 0 {
+                line_s0.set_high();
+            } else {
+                line_s0.set_low();
+            }
+            if i & 0b0010 != 0 {
+                line_s1.set_high();
+            } else {
+                line_s1.set_low();
+            }
+            if i & 0b0100 != 0 {
+                line_s2.set_high();
+            } else {
+                line_s2.set_low();
+            }
+            if i & 0b1000 != 0 {
+                line_s3.set_high();
+            } else {
+                line_s3.set_low();
+            }
+
+            if i & 0b0001 != 0 {
+                ir_s0.set_high();
+            } else {
+                ir_s0.set_low();
+            }
+            if i & 0b0010 != 0 {
+                ir_s1.set_high();
+            } else {
+                ir_s1.set_low();
+            }
+            if i & 0b0100 != 0 {
+                ir_s2.set_high();
+            } else {
+                ir_s2.set_low();
+            }
+            if i & 0b1000 != 0 {
+                ir_s3.set_high();
+            } else {
+                ir_s3.set_low();
+            }
+
+            adc_line[i] = adc1.read(&mut p.PC0);
+            adc_line[i + 16] = adc1.read(&mut p.PC1);
+            adc_ir[i] = adc1.read(&mut p.PC2);
+        }
+
+        let adc_line = adc_line
+            .iter()
+            .map(|x| (*x as f32) / 4096.0)
+            .collect::<Vec<_>>();
+
+        let (line_x, line_y) = calculate_adc_vec(&adc_line, &adc_line_sin, &adc_line_cos, 1.0);
+
+        adc_ir.iter_mut().for_each(|x| *x = 4096 - *x);
+        let adc_ir = adc_ir
+            .iter()
+            .map(|x| (*x as f32) / 4096.0)
+            .collect::<Vec<_>>();
+
+        let (ir_x, ir_y) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
+
+        // info!("Line X: {}, Line Y: {}", line_x, line_y);
+        // info!("IR X: {}, IR Y: {}", ir_x, ir_y);
+
+        if gpio_ui_toggle.is_high() {
+            motor_speed = MotorSpeed {
+                motor1: 0.0,
+                motor2: 0.0,
+                motor3: 0.0,
+                motor4: 0.0,
+            };
+        }
 
         let motor_speed_data = MdData { motor_speed };
 
@@ -246,84 +450,11 @@ async fn main(_spawner: Spawner) {
             }
         };
 
-        // let mut buf = [0u8; 64];
-        // match uart_jetson.read(&mut buf).await {
-        //     Ok(_) => {
-        //         let mut cobs_decoded_buf = [0; 64];
-        //         match corncobs::decode_buf(&buf, &mut cobs_decoded_buf) {
-        //             Ok(size) => {
-        //                 if size != cobs_decoded_data_size {
-        //                     info!("Invalid data size: {}", size);
-        //                     continue;
-        //                 }
-
-        //                 let msgpack_buf = corepack::from_bytes::<JetsonMsgPack>(
-        //                     &cobs_decoded_buf[0..cobs_decoded_data_size],
-        //                 )
-        //                 .unwrap();
-
-        //                 info!("Linear X: {}", msgpack_buf.cmd_vel.linear_x);
-        //                 info!("Linear Y: {}", msgpack_buf.cmd_vel.linear_y);
-        //                 info!("Angular Z: {}", msgpack_buf.cmd_vel.angular_z);
-
-        //                 angle_pid.setpoint(msgpack_buf.cmd_vel.angular_z);
-
-        //                 let mut motor1 = 0.0;
-        //                 let mut motor2 = 0.0;
-        //                 let mut motor3 = 0.0;
-        //                 let mut motor4 = 0.0;
-
-        //                 [wheel_calc1, wheel_calc2, wheel_calc3, wheel_calc4]
-        //                     .iter()
-        //                     .zip([motor1, motor2, motor3, motor4].iter_mut())
-        //                     .for_each(|(wheel, motor)| {
-        //                         *motor = wheel.calculate(
-        //                             msgpack_buf.cmd_vel.linear_x,
-        //                             msgpack_buf.cmd_vel.linear_y,
-        //                             msgpack_buf.cmd_vel.angular_z,
-        //                         );
-        //                     });
-
-        //                 motor_speed = MotorSpeed {
-        //                     motor1,
-        //                     motor2,
-        //                     motor3,
-        //                     motor4,
-        //                 };
-        //             }
-        //             Err(err) => {
-        //                 info!("Failed to decode data");
-        //                 info!("Data: {:?}", buf);
-        //                 match err {
-        //                     corncobs::CobsError::Truncated => info!("Truncated"),
-        //                     corncobs::CobsError::Corrupt => info!("Corrupt"),
-        //                 }
-
-        //                 // read until 0
-        //                 let mut buffer = [0; 1];
-        //                 loop {
-        //                     uart_md.read(&mut buffer).await.unwrap();
-        //                     if buffer[0] == 0 {
-        //                         break;
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //     }
-        //     Err(err) => {
-        //         if err == usart::Error::Overrun {
-        //             info!("Overrun");
-        //             continue;
-        //         } else {
-        //             info!("Failed to read data");
-        //             info!("Error: {:?}", err);
-        //             continue;
-        //         }
-        //     }
-        // };
+        // uart_jetson
+        //     .write("Hello, World!\n".as_bytes())
+        //     .await
+        //     .unwrap();
 
         // Timer::after_millis(10).await;
-
-        // info!("D: {}", bno08x.get_sensor_value());
     }
 }
