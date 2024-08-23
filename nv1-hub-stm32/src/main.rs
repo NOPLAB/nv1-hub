@@ -6,15 +6,10 @@ mod omni;
 
 extern crate alloc;
 
-use core::{
-    borrow::{Borrow, BorrowMut},
-    cell::RefCell,
-    ops::Deref,
-};
+use core::{borrow::Borrow, cell::RefCell};
 
 use alloc::vec::Vec;
 use defmt::error;
-use embassy_futures::select::{select, select3};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use embedded_alloc::Heap;
