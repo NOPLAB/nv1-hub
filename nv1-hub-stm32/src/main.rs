@@ -8,7 +8,10 @@ extern crate alloc;
 
 use core::{borrow::Borrow, cell::RefCell};
 
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::{boxed::Box, vec};
 use defmt::error;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
@@ -29,14 +32,23 @@ use embassy_stm32::{
     usart::{self, Config, Uart},
 };
 use embassy_time::Delay;
-use embedded_graphics::prelude::Size;
+use embedded_graphics::prelude::{Point, Size};
 use libm::{cosf, powf, sinf, sqrtf};
 use num_traits::{AsPrimitive, Num};
-use nv1_hub_ui::{HubUi, HubUiEvent, HubUiOptions};
+use nv1_hub_ui::elements::{Element, Text, TextOption, Value, ValueOption};
+use nv1_hub_ui::menu::{Menu, MenuOption};
+use nv1_hub_ui::{
+    elements::{Button, ButtonOption},
+    menu::{ListMenu, ListMenuOption},
+    Event, HubUI,
+};
+use nv1_hub_ui::{EventKey, HubUIOption};
 
 use nv1_msg::hub::HubMsgPackTx;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+use ssd1306::mode::BufferedGraphicsMode;
+use ssd1306::prelude::I2CInterface;
 use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306};
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
@@ -121,14 +133,19 @@ where
     }
 }
 
-fn calculate_adc_vec<T>(adc: &[T], adc_sin: &[T], adc_cos: &[T], mul: T) -> (f32, f32)
+fn calculate_adc_vec<T>(adc: &[T], adc_sin: &[T], adc_cos: &[T], _mul: T) -> (f32, f32, T)
 where
-    T: Num + Copy + 'static + AsPrimitive<f32>,
+    T: Num + Copy + 'static + AsPrimitive<f32> + PartialOrd,
+    f32: AsPrimitive<T>,
 {
     let mut sum_x: f32 = 0.0;
     let mut sum_y: f32 = 0.0;
+    let mut max_adc: T = T::zero();
 
     for i in 0..adc.len() {
+        if adc[i] > max_adc {
+            max_adc = adc[i];
+        }
         sum_x = sum_x + (adc_cos[i] * adc[i]).as_();
         sum_y = sum_y + (adc_sin[i] * adc[i]).as_();
     }
@@ -138,6 +155,7 @@ where
     (
         sum_x / adc.len() as f32 / norm,
         sum_y / adc.len() as f32 / norm,
+        max_adc,
     )
 }
 
@@ -235,10 +253,10 @@ async fn main(spawner: Spawner) {
         1.0,
     );
 
-    let mut gpio_ui_toggle = Input::new(p.PC12, Pull::None);
-    let mut gpio_ui_up = Input::new(p.PC13, Pull::None);
-    let mut gpio_ui_down = Input::new(p.PC14, Pull::None);
-    let mut gpio_ui_enter = Input::new(p.PC15, Pull::None);
+    let gpio_ui_toggle = Input::new(p.PC12, Pull::None);
+    let gpio_ui_up = Input::new(p.PC13, Pull::None);
+    let gpio_ui_down = Input::new(p.PC14, Pull::None);
+    let gpio_ui_enter = Input::new(p.PC15, Pull::None);
 
     let mut config = i2c::Config::default();
     config.timeout = Duration::from_millis(100);
@@ -262,14 +280,79 @@ async fn main(spawner: Spawner) {
     .into_buffered_graphics_mode();
     ssd1306.init().unwrap();
 
-    let ui_options = HubUiOptions {
-        display_size: Size::new(128, 64),
-        menu_vertical_num: 4,
+    let ui_option = HubUIOption {
+        menu_option: MenuOption {
+            position: Point::new(2 + 64, 2),
+            size: Size::new(64 - 4, 64 - 4),
+        },
     };
-    let mut ui = HubUi::new(&mut ssd1306, ui_options);
-    let _ = ui.update(&HubUiEvent::None);
 
-    ssd1306.flush().unwrap();
+    let mut ui_text = Text::new(
+        "Interface",
+        TextOption {
+            font: embedded_graphics::mono_font::ascii::FONT_6X10,
+        },
+    );
+
+    let ui_shutdown = Button::new(
+        "Shutdown",
+        ButtonOption {
+            font: embedded_graphics::mono_font::ascii::FONT_6X10,
+        },
+    );
+
+    let ui_reboot = Button::new(
+        "Reboot",
+        ButtonOption {
+            font: embedded_graphics::mono_font::ascii::FONT_6X10,
+        },
+    );
+
+    let mut ui_line = Value::new(
+        "L",
+        0,
+        ValueOption {
+            font: embedded_graphics::mono_font::ascii::FONT_6X10,
+        },
+    );
+
+    let elements: Vec<
+        Box<
+            dyn Element<
+                Ssd1306<
+                    I2CInterface<I2c<peripherals::I2C3>>,
+                    DisplaySize128x64,
+                    BufferedGraphicsMode<DisplaySize128x64>,
+                >,
+            >,
+        >,
+    > = vec![
+        Box::new(ui_text),
+        Box::new(ui_shutdown),
+        Box::new(ui_reboot),
+        Box::new(ui_line),
+    ];
+    let menu: Vec<
+        Box<
+            dyn Menu<
+                Ssd1306<
+                    I2CInterface<I2c<peripherals::I2C3>>,
+                    DisplaySize128x64,
+                    BufferedGraphicsMode<DisplaySize128x64>,
+                >,
+            >,
+        >,
+    > = vec![Box::new(ListMenu::new(
+        elements,
+        ListMenuOption {
+            vertical_num: 4,
+            element_margin: 1,
+            cursor_line_len: 4,
+        },
+    ))];
+    let mut ui = HubUI::new(&mut ssd1306, menu, ui_option);
+    let display = ui.update(&Event::None);
+    display.flush().unwrap();
 
     let (mut proc, mut parser) = match bno08x_rvc::create(BB.borrow()) {
         Ok((proc, pars)) => (proc, pars),
@@ -304,6 +387,8 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(uart_jetson_rx_task()).unwrap();
     spawner.spawn(uart_jetson_tx_task()).unwrap();
+
+    let mut loop_count = 0;
 
     info!("nv1-hub initialized");
 
@@ -373,7 +458,8 @@ async fn main(spawner: Spawner) {
             .map(|x| (*x as f32) / 4096.0)
             .collect::<Vec<_>>();
 
-        let (line_x, line_y) = calculate_adc_vec(&adc_line, &adc_line_sin, &adc_line_cos, 1.0);
+        let (line_x, line_y, line_strength) =
+            calculate_adc_vec(&adc_line, &adc_line_sin, &adc_line_cos, 1.0);
 
         adc_ir.iter_mut().for_each(|x| *x = 4096 - *x);
         let adc_ir = adc_ir
@@ -381,10 +467,26 @@ async fn main(spawner: Spawner) {
             .map(|x| (*x as f32) / 4096.0)
             .collect::<Vec<_>>();
 
-        let (ir_x, ir_y) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
+        let adc_ir_over_count = adc_ir.iter().filter(|x| **x > 0.06).count();
 
-        // info!("Line X: {}, Line Y: {}", line_x, line_y);
+        let (ir_x, ir_y, ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
+
+        // info!(
+        //     "Line X: {}, Line Y: {}, Strength: {}",
+        //     line_x, line_y, line_strength
+        // );
+
+        // info!("strength {}", (0.71 - ir_strength));
+        // info!("over count {}", adc_ir_over_count);
         // info!("IR X: {}, IR Y: {}", ir_x, ir_y);
+
+        let mut additional_vel_x = 0.0;
+        let mut additional_vel_y = 0.0;
+        if line_strength > 0.12 {
+            info!("[LINE] Line detected");
+            additional_vel_x = -line_x * 1.5;
+            additional_vel_y = -line_y * 1.5;
+        }
 
         let msg = G_MSG_RX.lock().await.clone();
 
@@ -401,10 +503,12 @@ async fn main(spawner: Spawner) {
         prev_yaw = yaw;
         let speed_pid_output = speed_pid.next_control_output(yaw_speed);
 
-        let motor1 = wheel_calc1.calculate(msg.vel.x, msg.vel.y, -speed_pid_output.output);
-        let motor2 = wheel_calc2.calculate(msg.vel.x, msg.vel.y, -speed_pid_output.output);
-        let motor3 = wheel_calc3.calculate(msg.vel.x, msg.vel.y, -speed_pid_output.output);
-        let motor4 = wheel_calc4.calculate(msg.vel.x, msg.vel.y, -speed_pid_output.output);
+        let vel_x = msg.vel.x + additional_vel_x;
+        let vel_y = msg.vel.y + additional_vel_y;
+        let motor1 = wheel_calc1.calculate(vel_x, vel_y, -speed_pid_output.output);
+        let motor2 = wheel_calc2.calculate(vel_x, vel_y, -speed_pid_output.output);
+        let motor3 = wheel_calc3.calculate(vel_x, vel_y, -speed_pid_output.output);
+        let motor4 = wheel_calc4.calculate(vel_x, vel_y, -speed_pid_output.output);
 
         motor_speed = MotorSpeed {
             motor1,
@@ -434,9 +538,30 @@ async fn main(spawner: Spawner) {
             }
         };
 
+        let ir_distance = (12 - adc_ir_over_count) as f32 * 0.15;
+
+        let mut shutdown = false;
+        if loop_count % 10 == 0 {
+            ui_line.set_value(1);
+
+            let event = if gpio_ui_up.is_high() {
+                Event::KeyDown(EventKey::Up)
+            } else if gpio_ui_down.is_high() {
+                Event::KeyDown(EventKey::Down)
+            } else if gpio_ui_enter.is_high() {
+                Event::KeyDown(EventKey::Enter)
+            } else {
+                Event::None
+            };
+            let display = ui.update(&event);
+            display.flush().unwrap();
+
+            shutdown = ui_shutdown.is_pressed();
+        }
+
         let msg_tx = HubMsgPackTx {
             pause: gpio_ui_toggle.is_high(),
-            shutdown: gpio_ui_enter.is_high(),
+            shutdown: shutdown,
             reboot: false,
             vel: nv1_msg::hub::Velocity {
                 x: msg.vel.x,
@@ -446,7 +571,7 @@ async fn main(spawner: Spawner) {
             ir: nv1_msg::hub::Ir {
                 x: ir_x,
                 y: ir_y,
-                strength: 0.0,
+                strength: ir_distance,
             },
             line: nv1_msg::hub::Line {
                 x: line_x,
@@ -457,6 +582,8 @@ async fn main(spawner: Spawner) {
         };
 
         G_MSG_TX.lock().await.replace(msg_tx);
+
+        loop_count += 1;
     }
 }
 
