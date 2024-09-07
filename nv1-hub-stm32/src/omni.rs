@@ -24,10 +24,10 @@ impl OmniWheel {
     // 					* speed_y + speed_angle * tread) / wheel_r;
     // }
 
-    pub fn calculate(&self, linier_x: f32, linier_y: f32, angular_z: f32) -> f32 {
-        -(sinf(angular_z + self.motor_angle) * cosf(angular_z) * linier_x
-            + cosf(angular_z + self.motor_angle) * cosf(angular_z) * linier_y
-            + angular_z * self.tread)
+    pub fn calculate(&self, linier_x: f32, linier_y: f32, angle: f32, angle_speed: f32) -> f32 {
+        (-sinf(angle + self.motor_angle) * cosf(angle) * linier_x
+            + cosf(angle + self.motor_angle) * cosf(angle) * linier_y
+            + angle_speed * self.tread)
             / self.wheel_r
     }
 }

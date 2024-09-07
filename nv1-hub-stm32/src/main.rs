@@ -6,6 +6,8 @@ mod omni;
 
 extern crate alloc;
 
+use core::cell::Ref;
+use core::f32::consts::PI;
 use core::{borrow::Borrow, cell::RefCell};
 
 use alloc::format;
@@ -88,6 +90,16 @@ static G_UART: Mutex<
     ThreadModeRawMutex,
     Option<Uart<'static, peripherals::USART3, peripherals::DMA1_CH3, peripherals::DMA1_CH1>>,
 > = Mutex::new(None);
+
+static G_SHUTDOWN: embassy_sync::blocking_mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+    RefCell<bool>,
+> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(false));
+
+static G_REBOOT: embassy_sync::blocking_mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+    RefCell<bool>,
+> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(false));
 
 static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
     Mutex::new(nv1_msg::hub::HubMsgPackRx {
@@ -278,7 +290,15 @@ async fn main(spawner: Spawner) {
         ssd1306::prelude::DisplayRotation::Rotate0,
     )
     .into_buffered_graphics_mode();
-    ssd1306.init().unwrap();
+    let mut ssd1306_init_success = false;
+    match ssd1306.init() {
+        Ok(_) => {
+            ssd1306_init_success = true;
+        }
+        Err(_) => {
+            error!("Can't initialize ssd1306");
+        }
+    };
 
     let ui_option = HubUIOption {
         menu_option: MenuOption {
@@ -296,6 +316,11 @@ async fn main(spawner: Spawner) {
 
     let ui_shutdown = Button::new(
         "Shutdown",
+        |pressed| {
+            G_SHUTDOWN.lock(|val| {
+                *val.borrow_mut() = pressed;
+            });
+        },
         ButtonOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
         },
@@ -303,6 +328,11 @@ async fn main(spawner: Spawner) {
 
     let ui_reboot = Button::new(
         "Reboot",
+        |pressed| {
+            G_REBOOT.lock(|val| {
+                *val.borrow_mut() = pressed;
+            });
+        },
         ButtonOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
         },
@@ -352,7 +382,9 @@ async fn main(spawner: Spawner) {
     ))];
     let mut ui = HubUI::new(&mut ssd1306, menu, ui_option);
     let display = ui.update(&Event::None);
-    display.flush().unwrap();
+    if ssd1306_init_success {
+        display.flush().unwrap();
+    }
 
     let (mut proc, mut parser) = match bno08x_rvc::create(BB.borrow()) {
         Ok((proc, pars)) => (proc, pars),
@@ -370,11 +402,11 @@ async fn main(spawner: Spawner) {
 
     let mut prev_system_time_ms = 0;
 
-    let mut angle_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
-    angle_pid.p(1.2, 100.0);
+    // let mut angle_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
+    // angle_pid.p(1.2, 100.0);
 
     let mut speed_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
-    speed_pid.p(0.08, 100.0);
+    speed_pid.p(1.0, 100.0);
 
     const WHEEL_R: f32 = 25.0 / 1000.0;
     const THREAD: f32 = 108.0 / 1000.0;
@@ -471,45 +503,44 @@ async fn main(spawner: Spawner) {
 
         let (ir_x, ir_y, ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
 
-        // info!(
-        //     "Line X: {}, Line Y: {}, Strength: {}",
-        //     line_x, line_y, line_strength
-        // );
-
-        // info!("strength {}", (0.71 - ir_strength));
-        // info!("over count {}", adc_ir_over_count);
-        // info!("IR X: {}, IR Y: {}", ir_x, ir_y);
+        let adc_have_ball = adc1.read(&mut p.PC3);
 
         let mut additional_vel_x = 0.0;
         let mut additional_vel_y = 0.0;
+        info!("line_strength: {}", line_strength);
         if line_strength > 0.12 {
-            info!("[LINE] Line detected");
-            additional_vel_x = -line_x * 1.5;
-            additional_vel_y = -line_y * 1.5;
+            // info!("[LINE] Line detected");
+            additional_vel_x = -line_x * 4.0;
+            additional_vel_y = -line_y * 4.0;
         }
+
+        // info!("Have ball: {}", adc_have_ball);
+        // info!("over count {}", adc_ir_over_count);
+        // info!("IR X: {}, IR Y: {}", ir_x, ir_y);
 
         let msg = G_MSG_RX.lock().await.clone();
 
-        // angle_pid.setpoint(msg.vel.angular_z);
-        // let angle_pid_output = angle_pid.next_control_output(yaw);
+        // speed_pid.setpoint(msg.vel.angle);
+        // speed_pid.setpoint(3.14);
 
-        speed_pid.setpoint(msg.vel.angle);
+        // let now_ms = Instant::now().as_millis();
+        // let dt_ms = now_ms - prev_system_time_ms;
+        // prev_system_time_ms = now_ms;
 
-        let now_ms = Instant::now().as_millis();
-        let dt_ms = now_ms - prev_system_time_ms;
-        prev_system_time_ms = now_ms;
+        // let yaw_speed = (yaw - prev_yaw) / (dt_ms as f32 / 1000.0);
+        // prev_yaw = yaw;
+        // let speed_pid_output = speed_pid.next_control_output(yaw_speed);
 
-        let yaw_speed = (yaw - prev_yaw) / (dt_ms as f32 / 1000.0);
-        prev_yaw = yaw;
-        let speed_pid_output = speed_pid.next_control_output(yaw_speed);
+        let vel_x = (msg.vel.x + additional_vel_x) * 1.2;
+        let vel_y = (msg.vel.y + additional_vel_y) * 1.2;
+        let vel_angle = -msg.vel.angle; // reversed
 
-        let vel_x = msg.vel.x + additional_vel_x;
-        let vel_y = msg.vel.y + additional_vel_y;
-        let motor1 = wheel_calc1.calculate(vel_x, vel_y, -speed_pid_output.output);
-        let motor2 = wheel_calc2.calculate(vel_x, vel_y, -speed_pid_output.output);
-        let motor3 = wheel_calc3.calculate(vel_x, vel_y, -speed_pid_output.output);
-        let motor4 = wheel_calc4.calculate(vel_x, vel_y, -speed_pid_output.output);
+        let motor1 = -wheel_calc1.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
+        let motor2 = -wheel_calc2.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
+        let motor3 = -wheel_calc3.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
+        let motor4 = -wheel_calc4.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
 
+        // rps
         motor_speed = MotorSpeed {
             motor1,
             motor2,
@@ -538,9 +569,12 @@ async fn main(spawner: Spawner) {
             }
         };
 
-        let ir_distance = (12 - adc_ir_over_count) as f32 * 0.15;
+        let mut ir_distance = (8 - adc_ir_over_count) as f32 * 0.15;
+        if ir_distance < 0.0 || ir_distance > 2.0 {
+            ir_distance = 0.0;
+        }
+        // info!("IR distance: {}", ir_distance);
 
-        let mut shutdown = false;
         if loop_count % 10 == 0 {
             ui_line.set_value(1);
 
@@ -554,15 +588,18 @@ async fn main(spawner: Spawner) {
                 Event::None
             };
             let display = ui.update(&event);
-            display.flush().unwrap();
-
-            shutdown = ui_shutdown.is_pressed();
+            if ssd1306_init_success {
+                display.flush().unwrap();
+            }
         }
+
+        let shutdown = G_SHUTDOWN.lock(|val| *val.borrow());
+        let reboot = G_REBOOT.lock(|val| *val.borrow());
 
         let msg_tx = HubMsgPackTx {
             pause: gpio_ui_toggle.is_high(),
-            shutdown: shutdown,
-            reboot: false,
+            shutdown,
+            reboot,
             vel: nv1_msg::hub::Velocity {
                 x: msg.vel.x,
                 y: msg.vel.y,
@@ -578,7 +615,7 @@ async fn main(spawner: Spawner) {
                 y: line_y,
                 strength: 0.0,
             },
-            have_ball: false,
+            have_ball: adc_have_ball < 2048,
         };
 
         G_MSG_TX.lock().await.replace(msg_tx);
@@ -608,14 +645,14 @@ async fn uart_jetson_rx_task() {
         match timeout_res {
             Ok(rx) => match rx {
                 Ok(_) => {
-                    info!("[UART Jetson] received data: {:?}", msg_with_cobs);
+                    // info!("[UART Jetson] received data: {:?}", msg_with_cobs);
                     match postcard::from_bytes_cobs::<nv1_msg::hub::HubMsgPackRx>(
                         &mut msg_with_cobs,
                     ) {
                         Ok(msg) => {
-                            info!("Linear X: {}", msg.vel.x);
-                            info!("Linear Y: {}", msg.vel.y);
-                            info!("Angular Z: {}", msg.vel.angle);
+                            // info!("Linear X: {}", msg.vel.x);
+                            // info!("Linear Y: {}", msg.vel.y);
+                            // info!("Angular Z: {}", msg.vel.angle);
 
                             G_MSG_RX.lock().await.vel = msg.vel;
                         }
@@ -633,7 +670,7 @@ async fn uart_jetson_rx_task() {
             Err(_) => {
                 timeout_count += 1;
 
-                if timeout_count > 10 {
+                if timeout_count > 100 {
                     info!("[UART Jetson] timeout");
                     G_MSG_RX.lock().await.vel = nv1_msg::hub::Velocity {
                         x: 0.0,

@@ -137,32 +137,34 @@ pub struct ButtonOption {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Button {
+pub struct Button<F> {
     pub option: ButtonOption,
     pub text: &'static str,
-    selected: bool,
+    pressed: bool,
+    callback: F,
 }
 
-impl Button {
-    pub fn new(text: &'static str, option: ButtonOption) -> Self {
+impl<F> Button<F>
+where
+    F: Fn(bool) -> (),
+{
+    pub fn new(text: &'static str, callback: F, option: ButtonOption) -> Self {
         Button {
             option,
             text,
-            selected: false,
+            pressed: false,
+            callback,
         }
-    }
-
-    pub fn is_pressed(&self) -> bool {
-        self.selected
     }
 }
 
-impl<T> Element<T> for Button
+impl<T, F> Element<T> for Button<F>
 where
     T: DrawTarget<Color = BinaryColor>,
+    F: Fn(bool) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {
-        let style = if self.selected {
+        let style = if self.pressed {
             PrimitiveStyle::with_fill(BinaryColor::On)
         } else {
             PrimitiveStyle::with_stroke(BinaryColor::On, 1)
@@ -172,7 +174,7 @@ where
             .into_styled(style.clone())
             .draw(display)?;
 
-        let character_style = if self.selected {
+        let character_style = if self.pressed {
             MonoTextStyle::new(&self.option.font, BinaryColor::Off)
         } else {
             MonoTextStyle::new(&self.option.font, BinaryColor::On)
@@ -194,15 +196,19 @@ where
     fn event(&mut self, event: &crate::Event, info: ElementInfo) -> bool {
         match event {
             crate::Event::KeyDown(crate::EventKey::Enter) => {
-                self.selected = true;
+                self.pressed = true;
             }
             _ => {
-                self.selected = false;
+                self.pressed = false;
             }
         }
 
         if !info.selected {
-            self.selected = false;
+            self.pressed = false;
+        }
+
+        if info.selected {
+            (self.callback)(self.pressed);
         }
 
         false

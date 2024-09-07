@@ -1,10 +1,14 @@
 {
     "cSpell.words": [
         "baudrate",
+        "bbqueue",
         "corepack",
+        "cosf",
         "jetson",
+        "libm",
         "msgpack",
         "omni",
-        "pixelcolor"
+        "pixelcolor",
+        "sinf"
     ]
 }
