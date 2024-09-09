@@ -34,7 +34,6 @@ libm = "0.2.8"
 panic-halt = "0.2.0"
 panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
 pid = "4.0.0"
-sh2 = "0.1.0"
 ssd1306 = "0.8.4"
 embedded-graphics = "0.8.1"
 serde = { version = "1.0", default-features = false, features = ["derive"] }

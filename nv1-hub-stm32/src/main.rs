@@ -6,17 +6,14 @@ mod omni;
 
 extern crate alloc;
 
-use core::cell::Ref;
 use core::f32::consts::PI;
 use core::{borrow::Borrow, cell::RefCell};
 
-use alloc::format;
-use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, vec};
 use defmt::error;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{with_timeout, Duration, Timer};
 use embedded_alloc::Heap;
 
 #[global_allocator]
@@ -67,22 +64,6 @@ bind_interrupts!(struct Irqs {
     I2C3_EV => i2c::EventInterruptHandler<peripherals::I2C3>;
     I2C3_ER => i2c::ErrorInterruptHandler<peripherals::I2C3>;
 });
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct MotorSpeed {
-    motor1: f32,
-    motor2: f32,
-    motor3: f32,
-    motor4: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-union MdData {
-    motor_speed: MotorSpeed,
-    buffer: [u8; 16],
-}
 
 static BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
 
@@ -184,7 +165,7 @@ async fn main(spawner: Spawner) {
 
     let mut uart3_config = Config::default();
     uart3_config.baudrate = 115200;
-    let mut uart_jetson = Uart::new(
+    let uart_jetson = Uart::new(
         p.USART3,
         p.PC5,
         p.PB10,
@@ -307,7 +288,7 @@ async fn main(spawner: Spawner) {
         },
     };
 
-    let mut ui_text = Text::new(
+    let ui_text = Text::new(
         "Interface",
         TextOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
@@ -394,28 +375,22 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let mut _roll = 0.0;
-    let mut _pitch = 0.0;
     let mut yaw = 0.0;
-
-    let mut prev_yaw = 0.0;
-
-    let mut prev_system_time_ms = 0;
-
-    // let mut angle_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
-    // angle_pid.p(1.2, 100.0);
 
     let mut speed_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
     speed_pid.p(1.0, 100.0);
 
     const WHEEL_R: f32 = 25.0 / 1000.0;
     const THREAD: f32 = 108.0 / 1000.0;
-    let wheel_calc1 = omni::OmniWheel::new(135.0_f32.to_radians(), WHEEL_R, THREAD);
-    let wheel_calc2 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
-    let wheel_calc3 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
-    let wheel_calc4 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
+    // let wheel_calc1 = omni::OmniWheel::new(135.0_f32.to_radians(), WHEEL_R, THREAD);
+    // let wheel_calc2 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
+    // let wheel_calc3 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
+    // let wheel_calc4 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
 
-    let mut motor_speed;
+    let wheel_calc1 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
+    let wheel_calc2 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
+    let wheel_calc3 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
+    let wheel_calc4 = omni::OmniWheel::new(135.0_f32.to_radians(), WHEEL_R, THREAD);
 
     spawner.spawn(uart_jetson_rx_task()).unwrap();
     spawner.spawn(uart_jetson_tx_task()).unwrap();
@@ -501,71 +476,55 @@ async fn main(spawner: Spawner) {
 
         let adc_ir_over_count = adc_ir.iter().filter(|x| **x > 0.06).count();
 
-        let (ir_x, ir_y, ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
+        let (ir_x, ir_y, _ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
 
         let adc_have_ball = adc1.read(&mut p.PC3);
 
         let mut additional_vel_x = 0.0;
         let mut additional_vel_y = 0.0;
-        info!("line_strength: {}", line_strength);
+        // info!("line_strength: {}", line_strength);
+
+        // Line detect
         if line_strength > 0.12 {
             // info!("[LINE] Line detected");
             additional_vel_x = -line_x * 4.0;
             additional_vel_y = -line_y * 4.0;
         }
 
-        // info!("Have ball: {}", adc_have_ball);
-        // info!("over count {}", adc_ir_over_count);
-        // info!("IR X: {}, IR Y: {}", ir_x, ir_y);
-
         let msg = G_MSG_RX.lock().await.clone();
 
-        // speed_pid.setpoint(msg.vel.angle);
-        // speed_pid.setpoint(3.14);
-
-        // let now_ms = Instant::now().as_millis();
-        // let dt_ms = now_ms - prev_system_time_ms;
-        // prev_system_time_ms = now_ms;
-
-        // let yaw_speed = (yaw - prev_yaw) / (dt_ms as f32 / 1000.0);
-        // prev_yaw = yaw;
-        // let speed_pid_output = speed_pid.next_control_output(yaw_speed);
-
-        let vel_x = (msg.vel.x + additional_vel_x) * 1.2;
-        let vel_y = (msg.vel.y + additional_vel_y) * 1.2;
+        let vel_x = msg.vel.x + additional_vel_x;
+        let vel_y = msg.vel.y + additional_vel_y;
         let vel_angle = -msg.vel.angle; // reversed
 
-        let motor1 = -wheel_calc1.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
-        let motor2 = -wheel_calc2.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
-        let motor3 = -wheel_calc3.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
-        let motor4 = -wheel_calc4.calculate(-vel_x, vel_y, 0.0, -vel_angle) / (2.0 * PI);
+        let motor1 = wheel_calc1.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
+        let motor2 = wheel_calc2.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
+        let motor3 = wheel_calc3.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
+        let motor4 = wheel_calc4.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
 
-        // rps
-        motor_speed = MotorSpeed {
-            motor1,
-            motor2,
-            motor3,
-            motor4,
+        let mut md_msg = nv1_msg::md::HubMsgPackRx {
+            enable: true,
+            m1: motor1,
+            m2: motor2,
+            m3: motor3,
+            m4: motor4,
         };
 
         if gpio_ui_toggle.is_high() {
-            motor_speed = MotorSpeed {
-                motor1: 0.0,
-                motor2: 0.0,
-                motor3: 0.0,
-                motor4: 0.0,
+            md_msg = nv1_msg::md::HubMsgPackRx {
+                enable: false,
+                m1: 0.0,
+                m2: 0.0,
+                m3: 0.0,
+                m4: 0.0,
             };
         }
 
-        let motor_speed_data = MdData { motor_speed };
-
-        let mut buffer = [0u8; 64];
-        let encoded_size = corncobs::encode_buf(unsafe { &motor_speed_data.buffer }, &mut buffer);
-
-        match uart_md.write(&buffer[..encoded_size]).await {
+        let md_data = postcard::to_vec_cobs::<nv1_msg::md::HubMsgPackRx, 64>(&md_msg).unwrap();
+        match uart_md.write(&md_data).await {
             Ok(_) => {}
-            Err(e) => {
-                info!("UART write error: {:?}", e);
+            Err(err) => {
+                error!("[UART MD] write error: {:?}", err);
             }
         };
 
@@ -661,6 +620,7 @@ async fn uart_jetson_rx_task() {
                             continue;
                         }
                     };
+                    timeout_count = 0;
                 }
                 Err(err) => {
                     info!("[UART Jetson] read error: {:?}", err);
@@ -679,7 +639,6 @@ async fn uart_jetson_rx_task() {
                     };
                     timeout_count = 0;
                 }
-                Timer::after_millis(10).await;
                 continue;
             }
         }
