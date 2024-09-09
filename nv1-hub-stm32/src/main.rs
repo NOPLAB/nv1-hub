@@ -382,10 +382,6 @@ async fn main(spawner: Spawner) {
 
     const WHEEL_R: f32 = 25.0 / 1000.0;
     const THREAD: f32 = 108.0 / 1000.0;
-    // let wheel_calc1 = omni::OmniWheel::new(135.0_f32.to_radians(), WHEEL_R, THREAD);
-    // let wheel_calc2 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
-    // let wheel_calc3 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
-    // let wheel_calc4 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
 
     let wheel_calc1 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
     let wheel_calc2 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
@@ -617,20 +613,18 @@ async fn uart_jetson_rx_task() {
                         }
                         Err(_) => {
                             info!("[UART Jetson] postcard decode error");
-                            continue;
                         }
                     };
                     timeout_count = 0;
                 }
                 Err(err) => {
                     info!("[UART Jetson] read error: {:?}", err);
-                    continue;
                 }
             },
             Err(_) => {
                 timeout_count += 1;
 
-                if timeout_count > 100 {
+                if timeout_count > 10 {
                     info!("[UART Jetson] timeout");
                     G_MSG_RX.lock().await.vel = nv1_msg::hub::Velocity {
                         x: 0.0,
@@ -639,9 +633,9 @@ async fn uart_jetson_rx_task() {
                     };
                     timeout_count = 0;
                 }
-                continue;
             }
         }
+        Timer::after_millis(10).await;
     }
 }
 
@@ -669,7 +663,6 @@ async fn uart_jetson_tx_task() {
             }
             Err(_) => {
                 info!("[UART Jetson] postcard encode error");
-                continue;
             }
         }
         Timer::after_millis(10).await;
