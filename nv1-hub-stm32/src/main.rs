@@ -8,17 +8,14 @@ mod omni;
 
 extern crate alloc;
 
-use core::convert::Infallible;
 use core::f32::consts::PI;
 use core::{borrow::Borrow, cell::RefCell};
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, vec};
-use defmt::{error, println};
-use embassy_stm32::flash::{self, Blocking, Flash, FLASH_BASE};
-use embassy_stm32::peripherals::FLASH;
-use embassy_stm32::sai::A;
+use defmt::error;
+use embassy_stm32::flash::{Blocking, Flash};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Timer};
 use embedded_alloc::Heap;
@@ -53,7 +50,6 @@ use nv1_hub_ui::{EventKey, HubUIOption};
 use nv1_msg::hub::HubMsgPackTx;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
-use serde::{Deserialize, Serialize};
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::prelude::I2CInterface;
 use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306};
