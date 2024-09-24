@@ -305,7 +305,7 @@ async fn main(spawner: Spawner) {
         },
     );
 
-    let mut shutdown = Rc::new(RefCell::new(false));
+    let shutdown = Rc::new(RefCell::new(false));
 
     let shutdown_clone = shutdown.clone();
     let ui_shutdown = Button::new(
@@ -318,7 +318,7 @@ async fn main(spawner: Spawner) {
         },
     );
 
-    let mut reboot = Rc::new(RefCell::new(false));
+    let reboot = Rc::new(RefCell::new(false));
 
     let reboot_clone = reboot.clone();
     let ui_reboot = Button::new(
@@ -331,13 +331,13 @@ async fn main(spawner: Spawner) {
         },
     );
 
-    let mut line_value = Rc::new(RefCell::new(0.0));
+    let line_value = Rc::new(RefCell::new(0.0));
 
     let line_value_clone = line_value.clone();
-    let mut ui_line_value = Value::new(
+    let ui_line_value = Value::new(
         "L",
         0.0,
-        |value| {
+        move |value| {
             *value = *line_value_clone.borrow_mut();
         },
         ValueOption {
