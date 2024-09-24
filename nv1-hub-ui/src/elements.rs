@@ -76,37 +76,33 @@ pub struct ValueOption {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Value<T> {
+pub struct Value<T, F> {
     pub option: ValueOption,
     pub title: &'static str,
     pub value: T,
+    request: F,
 }
 
-impl<T> Value<T>
+impl<T, F> Value<T, F>
 where
     T: Num + Copy,
+    F: Fn(&mut T) -> (),
 {
-    pub fn new(title: &'static str, value: T, option: ValueOption) -> Self {
+    pub fn new(title: &'static str, value: T, request: F, option: ValueOption) -> Self {
         Value {
             option,
             title,
             value,
+            request,
         }
-    }
-
-    pub fn set_value(&mut self, value: T) {
-        self.value = value;
-    }
-
-    pub fn get_value(&self) -> T {
-        self.value
     }
 }
 
-impl<T, U> Element<T> for Value<U>
+impl<T, U, F> Element<T> for Value<U, F>
 where
     T: DrawTarget<Color = BinaryColor>,
     U: Num + Copy + Display,
+    F: Fn(&mut U) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {
         let text = format!("{}: {}", self.title, self.value);
@@ -127,6 +123,7 @@ where
     }
 
     fn event(&mut self, event: &crate::Event, info: ElementInfo) -> bool {
+        (self.request)(&mut self.value);
         false
     }
 }
@@ -219,20 +216,22 @@ pub struct SliderOption {
     pub font: MonoFont<'static>,
 }
 
-pub struct Slider<T> {
+pub struct Slider<T, F> {
     pub option: SliderOption,
     pub value: T,
     pub min: T,
     pub max: T,
     pub one: T,
     entering: bool,
+    callback: F,
 }
 
-impl<T> Slider<T>
+impl<T, F> Slider<T, F>
 where
     T: Num + Copy,
+    F: Fn(T) -> (),
 {
-    pub fn new(value: T, min: T, max: T, one: T, option: SliderOption) -> Self {
+    pub fn new(value: T, min: T, max: T, one: T, callback: F, option: SliderOption) -> Self {
         Slider {
             option,
             value,
@@ -240,6 +239,7 @@ where
             max,
             one,
             entering: false,
+            callback,
         }
     }
 
@@ -252,10 +252,11 @@ where
     }
 }
 
-impl<T, U> Element<T> for Slider<U>
+impl<T, U, F> Element<T> for Slider<U, F>
 where
     T: DrawTarget<Color = BinaryColor>,
     U: Num + Copy + Display + PartialOrd,
+    F: Fn(U) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {
         let text = format!("{}", self.value);
@@ -283,11 +284,13 @@ where
             crate::Event::KeyDown(crate::EventKey::Up) => {
                 if self.entering && self.value < self.max {
                     self.value = self.value + self.one;
+                    (self.callback)(self.value);
                 }
             }
             crate::Event::KeyDown(crate::EventKey::Down) => {
                 if self.entering && self.value > self.min {
                     self.value = self.value - self.one;
+                    (self.callback)(self.value);
                 }
             }
             _ => {}

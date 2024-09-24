@@ -1,3 +1,5 @@
+// TODO ui MutexからRc moveに置き換える
+
 #![no_std]
 #![no_main]
 
@@ -6,12 +8,17 @@ mod omni;
 
 extern crate alloc;
 
+use core::convert::Infallible;
 use core::f32::consts::PI;
 use core::{borrow::Borrow, cell::RefCell};
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, vec};
-use defmt::error;
+use defmt::{error, println};
+use embassy_stm32::flash::{self, Blocking, Flash, FLASH_BASE};
+use embassy_stm32::peripherals::FLASH;
+use embassy_stm32::sai::A;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Timer};
 use embedded_alloc::Heap;
@@ -34,7 +41,7 @@ use embassy_time::Delay;
 use embedded_graphics::prelude::{Point, Size};
 use libm::{cosf, powf, sinf, sqrtf};
 use num_traits::{AsPrimitive, Num};
-use nv1_hub_ui::elements::{Element, Text, TextOption, Value, ValueOption};
+use nv1_hub_ui::elements::{Element, Slider, SliderOption, Text, TextOption, Value, ValueOption};
 use nv1_hub_ui::menu::{Menu, MenuOption};
 use nv1_hub_ui::{
     elements::{Button, ButtonOption},
@@ -46,6 +53,7 @@ use nv1_hub_ui::{EventKey, HubUIOption};
 use nv1_msg::hub::HubMsgPackTx;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+use serde::{Deserialize, Serialize};
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::prelude::I2CInterface;
 use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306};
@@ -71,16 +79,6 @@ static G_UART: Mutex<
     ThreadModeRawMutex,
     Option<Uart<'static, peripherals::USART3, peripherals::DMA1_CH3, peripherals::DMA1_CH1>>,
 > = Mutex::new(None);
-
-static G_SHUTDOWN: embassy_sync::blocking_mutex::Mutex<
-    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
-    RefCell<bool>,
-> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(false));
-
-static G_REBOOT: embassy_sync::blocking_mutex::Mutex<
-    embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
-    RefCell<bool>,
-> = embassy_sync::blocking_mutex::Mutex::new(RefCell::new(false));
 
 static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
     Mutex::new(nv1_msg::hub::HubMsgPackRx {
@@ -246,6 +244,22 @@ async fn main(spawner: Spawner) {
         1.0,
     );
 
+    let f = Rc::new(RefCell::new(Flash::new_blocking(p.FLASH)));
+
+    let settings = Rc::new(RefCell::new(
+        flash_read(&mut f.clone().borrow_mut()).unwrap_or(Settings {
+            line_strength: 0.12,
+        }),
+    ));
+
+    if settings.borrow_mut().line_strength.is_nan() {
+        settings.borrow_mut().line_strength = 0.12;
+
+        flash_write(&mut f.clone().borrow_mut(), &settings.borrow_mut()).unwrap();
+    }
+
+    info!("Line strength: {}", settings.borrow_mut().line_strength);
+
     let gpio_ui_toggle = Input::new(p.PC12, Pull::None);
     let gpio_ui_up = Input::new(p.PC13, Pull::None);
     let gpio_ui_down = Input::new(p.PC14, Pull::None);
@@ -295,34 +309,73 @@ async fn main(spawner: Spawner) {
         },
     );
 
+    let mut shutdown = Rc::new(RefCell::new(false));
+
+    let shutdown_clone = shutdown.clone();
     let ui_shutdown = Button::new(
         "Shutdown",
-        |pressed| {
-            G_SHUTDOWN.lock(|val| {
-                *val.borrow_mut() = pressed;
-            });
+        move |pressed| {
+            shutdown_clone.replace(pressed);
         },
         ButtonOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
         },
     );
 
+    let mut reboot = Rc::new(RefCell::new(false));
+
+    let reboot_clone = reboot.clone();
     let ui_reboot = Button::new(
         "Reboot",
-        |pressed| {
-            G_REBOOT.lock(|val| {
-                *val.borrow_mut() = pressed;
-            });
+        move |pressed| {
+            reboot_clone.replace(pressed);
         },
         ButtonOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
         },
     );
 
-    let mut ui_line = Value::new(
+    let mut line_value = Rc::new(RefCell::new(0.0));
+
+    let line_value_clone = line_value.clone();
+    let mut ui_line_value = Value::new(
         "L",
-        0,
+        0.0,
+        |value| {
+            *value = *line_value_clone.borrow_mut();
+        },
         ValueOption {
+            font: embedded_graphics::mono_font::ascii::FONT_6X10,
+        },
+    );
+
+    let settings_clone = settings.clone();
+    let f_clone = f.clone();
+    let ui_line_strength = Slider::new(
+        settings.borrow_mut().line_strength,
+        0.0,
+        1.0,
+        0.01,
+        move |value| {
+            settings_clone.borrow_mut().line_strength = value;
+            flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
+        },
+        SliderOption {
+            font: embedded_graphics::mono_font::ascii::FONT_6X10,
+        },
+    );
+
+    let settings_clone = settings.clone();
+    let ui_settings_reset = Button::new(
+        "S Reset",
+        move |pressed| {
+            if pressed {
+                settings_clone.borrow_mut().line_strength = 0.12;
+                flash_write(&mut f.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
+                settings_clone.replace(flash_read(&mut f.borrow_mut()).unwrap());
+            }
+        },
+        ButtonOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
         },
     );
@@ -341,7 +394,9 @@ async fn main(spawner: Spawner) {
         Box::new(ui_text),
         Box::new(ui_shutdown),
         Box::new(ui_reboot),
-        Box::new(ui_line),
+        Box::new(ui_line_value),
+        Box::new(ui_line_strength),
+        Box::new(ui_settings_reset),
     ];
     let menu: Vec<
         Box<
@@ -377,12 +432,11 @@ async fn main(spawner: Spawner) {
 
     let mut yaw = 0.0;
 
-    let mut speed_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
-    speed_pid.p(1.0, 100.0);
+    let mut rotation_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
+    rotation_pid.p(7.0, 100.0);
 
     const WHEEL_R: f32 = 25.0 / 1000.0;
     const THREAD: f32 = 108.0 / 1000.0;
-
     let wheel_calc1 = omni::OmniWheel::new(45.0_f32.to_radians(), WHEEL_R, THREAD);
     let wheel_calc2 = omni::OmniWheel::new(315.0_f32.to_radians(), WHEEL_R, THREAD);
     let wheel_calc3 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
@@ -394,6 +448,9 @@ async fn main(spawner: Spawner) {
     let mut loop_count = 0;
 
     info!("nv1-hub initialized");
+
+    let shutdown = shutdown.clone();
+    let reboot = reboot.clone();
 
     loop {
         let mut buf = [0u8; 19];
@@ -474,14 +531,23 @@ async fn main(spawner: Spawner) {
 
         let (ir_x, ir_y, _ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
 
+        // info!(
+        //     "angle: {}, IR X: {}, IR Y: {}",
+        //     libm::atan2f(ir_x, ir_y),
+        //     ir_x,
+        //     ir_y
+        // );
+
         let adc_have_ball = adc1.read(&mut p.PC3);
 
         let mut additional_vel_x = 0.0;
         let mut additional_vel_y = 0.0;
         // info!("line_strength: {}", line_strength);
 
+        info!("line_strength: {}", settings.borrow_mut().line_strength);
+
         // Line detect
-        if line_strength > 0.12 {
+        if line_strength > settings.borrow_mut().line_strength {
             // info!("[LINE] Line detected");
             additional_vel_x = -line_x * 4.0;
             additional_vel_y = -line_y * 4.0;
@@ -489,14 +555,27 @@ async fn main(spawner: Spawner) {
 
         let msg = G_MSG_RX.lock().await.clone();
 
-        let vel_x = msg.vel.x + additional_vel_x;
-        let vel_y = msg.vel.y + additional_vel_y;
-        let vel_angle = -msg.vel.angle; // reversed
+        let vel_x = msg.vel.x * 1.0 + additional_vel_x;
+        let vel_y = msg.vel.y * 1.0 + additional_vel_y;
+        // let rotation_target = -msg.vel.angle; // reversed
+        let rotation_target = 0.0;
 
-        let motor1 = wheel_calc1.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
-        let motor2 = wheel_calc2.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
-        let motor3 = wheel_calc3.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
-        let motor4 = wheel_calc4.calculate(vel_x, vel_y, 0.0, vel_angle) / (2.0 * PI);
+        // info!("rotation_target: {}", rotation_target);
+
+        rotation_pid.setpoint(rotation_target);
+
+        let rotation_pid_result = rotation_pid.next_control_output(yaw);
+        let rotation_vel = rotation_pid_result.output;
+
+        let motor1 = wheel_calc1.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
+        let motor2 = wheel_calc2.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
+        let motor3 = wheel_calc3.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
+        let motor4 = wheel_calc4.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
+
+        // info!(
+        //     "Motor1: {}, Motor2: {}, Motor3: {}, Motor4: {}",
+        //     motor1, motor2, motor3, motor4
+        // );
 
         let mut md_msg = nv1_msg::md::HubMsgPackRx {
             enable: true,
@@ -531,8 +610,6 @@ async fn main(spawner: Spawner) {
         // info!("IR distance: {}", ir_distance);
 
         if loop_count % 10 == 0 {
-            ui_line.set_value(1);
-
             let event = if gpio_ui_up.is_high() {
                 Event::KeyDown(EventKey::Up)
             } else if gpio_ui_down.is_high() {
@@ -548,13 +625,10 @@ async fn main(spawner: Spawner) {
             }
         }
 
-        let shutdown = G_SHUTDOWN.lock(|val| *val.borrow());
-        let reboot = G_REBOOT.lock(|val| *val.borrow());
-
         let msg_tx = HubMsgPackTx {
             pause: gpio_ui_toggle.is_high(),
-            shutdown,
-            reboot,
+            shutdown: *shutdown.borrow_mut(),
+            reboot: *reboot.borrow_mut(),
             vel: nv1_msg::hub::Velocity {
                 x: msg.vel.x,
                 y: msg.vel.y,
@@ -612,20 +686,20 @@ async fn uart_jetson_rx_task() {
                             G_MSG_RX.lock().await.vel = msg.vel;
                         }
                         Err(_) => {
-                            info!("[UART Jetson] postcard decode error");
+                            error!("[UART Jetson] postcard decode error");
                         }
                     };
                     timeout_count = 0;
                 }
                 Err(err) => {
-                    info!("[UART Jetson] read error: {:?}", err);
+                    error!("[UART Jetson] read error: {:?}", err);
                 }
             },
             Err(_) => {
                 timeout_count += 1;
 
                 if timeout_count > 10 {
-                    info!("[UART Jetson] timeout");
+                    error!("[UART Jetson] timeout");
                     G_MSG_RX.lock().await.vel = nv1_msg::hub::Velocity {
                         x: 0.0,
                         y: 0.0,
@@ -657,14 +731,39 @@ async fn uart_jetson_tx_task() {
                         // info!("[UART Jetson] sent data, len: {}", msg_with_cobs.len());
                     }
                     Err(e) => {
-                        info!("[UART Jetson] write error: {:?}", e);
+                        error!("[UART Jetson] write error: {:?}", e);
                     }
                 };
             }
             Err(_) => {
-                info!("[UART Jetson] postcard encode error");
+                error!("[UART Jetson] postcard encode error");
             }
         }
         Timer::after_millis(10).await;
     }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct Settings {
+    pub line_strength: f32,
+}
+
+fn flash_read(f: &mut Flash<'_, Blocking>) -> Result<Settings, embassy_stm32::flash::Error> {
+    let mut buf = [0u8; 32];
+    f.blocking_read(128 * 1024, &mut buf)?;
+
+    Ok(postcard::from_bytes(&buf).unwrap())
+}
+
+fn flash_write(
+    f: &mut Flash<'_, Blocking>,
+    settings: &Settings,
+) -> Result<(), embassy_stm32::flash::Error> {
+    let mut buf = [0u8; 32];
+    postcard::to_slice(settings, &mut buf).unwrap();
+
+    f.blocking_erase(128 * 1024, 128 * 1024 + 128 * 1024)?;
+    f.blocking_write(128 * 1024, &buf)?;
+
+    Ok(())
 }
