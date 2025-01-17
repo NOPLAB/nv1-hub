@@ -29,14 +29,12 @@ use embassy_executor::Spawner;
 use embassy_stm32::{
     adc::Adc,
     bind_interrupts,
-    dma::NoDma,
     gpio::{Input, Level, Output, Pull},
     i2c::{self, I2c},
     peripherals,
     time::Hertz,
     usart::{self, Config, Uart},
 };
-use embassy_time::Delay;
 use embedded_graphics::prelude::{Point, Size};
 use fmt::info;
 use libm::{cosf, powf, sinf, sqrtf};
@@ -200,7 +198,6 @@ async fn main(spawner: Spawner) {
     gpio_reset.set_high();
     Timer::after(Duration::from_millis(100)).await;
 
-    let mut delay = Delay;
     let mut adc1 = Adc::new(p.ADC1);
     adc1.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES3);
 
@@ -437,7 +434,6 @@ async fn main(spawner: Spawner) {
         OnGround,
         OnLine(f32, f32, f32),
         OutOfLineWithCenter(f32, f32, f32, u32),
-        EmergencyStop,
     }
 
     let mut prev_adc_state = AdcState::OnGround;
@@ -583,7 +579,6 @@ async fn main(spawner: Spawner) {
                     Some((-old_line_x, -old_line_y))
                 }
             }
-            AdcState::EmergencyStop => None,
         };
 
         adc_ir.iter_mut().for_each(|x| *x = 4096 - *x);
