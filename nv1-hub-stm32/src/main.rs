@@ -24,6 +24,7 @@ use embedded_alloc::Heap;
 static HEAP: Heap = Heap::empty();
 
 use bbqueue::BBBuffer;
+use embassy_executor::Spawner;
 use embassy_stm32::{
     adc::Adc,
     bind_interrupts,
@@ -36,6 +37,7 @@ use embassy_stm32::{
 };
 use embassy_time::Delay;
 use embedded_graphics::prelude::{Point, Size};
+use fmt::info;
 use libm::{cosf, powf, sinf, sqrtf};
 use num_traits::{AsPrimitive, Num};
 use nv1_hub_ui::elements::{Element, Slider, SliderOption, Text, TextOption, Value, ValueOption};
@@ -46,7 +48,6 @@ use nv1_hub_ui::{
     Event, HubUI,
 };
 use nv1_hub_ui::{EventKey, HubUIOption};
-
 use nv1_msg::hub::HubMsgPackTx;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
@@ -55,9 +56,6 @@ use ssd1306::prelude::I2CInterface;
 use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306};
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
-
-use embassy_executor::Spawner;
-use fmt::info;
 
 bind_interrupts!(struct Irqs {
     USART3 => usart::InterruptHandler<peripherals::USART3>;
