@@ -426,6 +426,9 @@ async fn main(spawner: Spawner) {
         }
     };
 
+    let shutdown = shutdown.clone();
+    let reboot = reboot.clone();
+
     let mut yaw = 0.0;
 
     let mut rotation_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
@@ -443,10 +446,16 @@ async fn main(spawner: Spawner) {
 
     let mut loop_count = 0;
 
-    info!("nv1-hub initialized");
+    enum AdcState {
+        OnGround,
+        OnLine(f32, f32, f32),
+        OutOfLineWithCenter(f32, f32, f32, u32),
+        EmergencyStop,
+    }
 
-    let shutdown = shutdown.clone();
-    let reboot = reboot.clone();
+    let mut prev_adc_state = AdcState::OnGround;
+
+    info!("nv1-hub initialized");
 
     loop {
         let mut buf = [0u8; 19];
@@ -514,8 +523,81 @@ async fn main(spawner: Spawner) {
             .map(|x| (*x as f32) / 4096.0)
             .collect::<Vec<_>>();
 
-        let (line_x, line_y, line_strength) =
+        let (line_vel_x, line_vel_y, line_strength) =
             calculate_adc_vec(&adc_line, &adc_line_sin, &adc_line_cos, 1.0);
+
+        let line_vel: Option<(f32, f32)> = match prev_adc_state {
+            AdcState::OnGround => {
+                if line_strength > settings.borrow_mut().line_strength {
+                    let angle = libm::atan2f(line_vel_y, line_vel_x);
+                    let angle = if angle < 0.0 { 2.0 * PI + angle } else { angle };
+
+                    prev_adc_state = AdcState::OnLine(angle, line_vel_x, line_vel_y);
+                    info!("[LINE] Line detected");
+                    Some((-line_vel_x, -line_vel_y))
+                } else {
+                    prev_adc_state = AdcState::OnGround;
+                    None
+                }
+            }
+            AdcState::OnLine(old_angle, old_line_x, old_line_y) => {
+                if line_strength < settings.borrow_mut().line_strength {
+                    prev_adc_state = AdcState::OnGround;
+                    None
+                } else {
+                    let new_angle = libm::atan2f(line_vel_y, line_vel_x); // -3.14 ~ 3.14
+                    let new_angle = if new_angle < 0.0 {
+                        2.0 * PI + new_angle
+                    } else {
+                        new_angle
+                    };
+
+                    if libm::fabsf(old_angle - new_angle) > 2.0 * PI / 4.0 {
+                        prev_adc_state =
+                            AdcState::OutOfLineWithCenter(old_angle, old_line_x, old_line_y, 0);
+                        info!(
+                            "Out of line new_angle: {}, prev_angle: {}",
+                            new_angle, old_angle
+                        );
+                        Some((-line_vel_x, -line_vel_y))
+                    } else {
+                        prev_adc_state = AdcState::OnLine(old_angle, old_line_x, old_line_y);
+                        // info!(
+                        //     "On line new_angle: {}, prev_angle: {}",
+                        //     new_angle, old_angle
+                        // );
+                        Some((-line_vel_x, -line_vel_y))
+                    }
+                }
+            }
+            AdcState::OutOfLineWithCenter(old_angle, old_line_x, old_line_y, counter) => {
+                let new_angle = libm::atan2f(line_vel_y, line_vel_x);
+                let new_angle = if new_angle < 0.0 {
+                    2.0 * PI + new_angle
+                } else {
+                    new_angle
+                };
+
+                if line_strength > settings.borrow_mut().line_strength
+                    && libm::fabsf(old_angle - new_angle) < 2.0 * PI / 4.0
+                {
+                    prev_adc_state = AdcState::OnLine(new_angle, line_vel_x, line_vel_y);
+                    Some((-line_vel_x, -line_vel_y))
+                } else if counter > 100 {
+                    // prev_adc_state = AdcState::EmergencyStop;
+                    None
+                } else {
+                    prev_adc_state = AdcState::OutOfLineWithCenter(
+                        old_angle,
+                        old_line_x,
+                        old_line_y,
+                        counter + 1,
+                    );
+                    Some((-old_line_x, -old_line_y))
+                }
+            }
+            AdcState::EmergencyStop => None,
+        };
 
         adc_ir.iter_mut().for_each(|x| *x = 4096 - *x);
         let adc_ir = adc_ir
@@ -523,40 +605,57 @@ async fn main(spawner: Spawner) {
             .map(|x| (*x as f32) / 4096.0)
             .collect::<Vec<_>>();
 
-        let adc_ir_over_count = adc_ir.iter().filter(|x| **x > 0.06).count();
-
         let (ir_x, ir_y, _ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
+
+        let adc_ir_over_count = adc_ir.iter().filter(|x| **x > 0.05).count();
+        // info!("IR over count: {}", adc_ir_over_count);
+
+        let ir_angle = libm::atan2f(ir_y, ir_x);
+        info!("IR angle: {}", ir_angle);
+        const IR_ANGLE_THRESHOLD: f32 = 0.3;
+        let ir_vel = if adc_ir_over_count > 13
+            && ir_angle > PI / 2.0 - IR_ANGLE_THRESHOLD
+            && ir_angle < PI / 2.0 + IR_ANGLE_THRESHOLD
+        {
+            Some((ir_x * 0.8, 0.4))
+        } else {
+            None
+        };
 
         // info!(
         //     "angle: {}, IR X: {}, IR Y: {}",
-        //     libm::atan2f(ir_x, ir_y),
+        //     libm::atan2f(ir_y, ir_x),
         //     ir_x,
         //     ir_y
         // );
 
         let adc_have_ball = adc1.read(&mut p.PC3);
 
-        let mut additional_vel_x = 0.0;
-        let mut additional_vel_y = 0.0;
         // info!("line_strength: {}", line_strength);
-
-        info!("line_strength: {}", settings.borrow_mut().line_strength);
-
-        // Line detect
-        if line_strength > settings.borrow_mut().line_strength {
-            // info!("[LINE] Line detected");
-            additional_vel_x = -line_x * 4.0;
-            additional_vel_y = -line_y * 4.0;
-        }
+        // info!("line_strength: {}", settings.borrow_mut().line_strength);
 
         let msg = G_MSG_RX.lock().await.clone();
 
-        let vel_x = msg.vel.x * 1.0 + additional_vel_x;
-        let vel_y = msg.vel.y * 1.0 + additional_vel_y;
+        // Line detect
+        let vel_x;
+        let vel_y;
+        if let Some((line_vel_x, line_vel_y)) = line_vel {
+            // info!("[LINE] Line detected");
+            vel_x = line_vel_x * 2.0;
+            vel_y = line_vel_y * 2.0;
+        } else if let Some((ir_x, ir_y)) = ir_vel {
+            info!("[IR] Assist Mode");
+            vel_x = ir_x;
+            vel_y = ir_y;
+        } else {
+            vel_x = msg.vel.x * 0.9;
+            vel_y = msg.vel.y * 0.9;
+        }
+
+        // info!("Vel X: {}, Vel Y: {}", vel_x, vel_y);
+
         // let rotation_target = -msg.vel.angle; // reversed
         let rotation_target = 0.0;
-
-        // info!("rotation_target: {}", rotation_target);
 
         rotation_pid.setpoint(rotation_target);
 
@@ -599,13 +698,8 @@ async fn main(spawner: Spawner) {
             }
         };
 
-        let mut ir_distance = (8 - adc_ir_over_count) as f32 * 0.15;
-        if ir_distance < 0.0 || ir_distance > 2.0 {
-            ir_distance = 0.0;
-        }
-        // info!("IR distance: {}", ir_distance);
-
-        if loop_count % 10 == 0 {
+        // UI update
+        if loop_count % 15 == 0 {
             let event = if gpio_ui_up.is_high() {
                 Event::KeyDown(EventKey::Up)
             } else if gpio_ui_down.is_high() {
@@ -621,6 +715,7 @@ async fn main(spawner: Spawner) {
             }
         }
 
+        // send data to Jetson
         let msg_tx = HubMsgPackTx {
             pause: gpio_ui_toggle.is_high(),
             shutdown: *shutdown.borrow_mut(),
@@ -633,11 +728,11 @@ async fn main(spawner: Spawner) {
             ir: nv1_msg::hub::Ir {
                 x: ir_x,
                 y: ir_y,
-                strength: ir_distance,
+                strength: 0.0,
             },
             line: nv1_msg::hub::Line {
-                x: line_x,
-                y: line_y,
+                x: line_vel_x,
+                y: line_vel_y,
                 strength: 0.0,
             },
             have_ball: adc_have_ball < 2048,
@@ -695,7 +790,7 @@ async fn uart_jetson_rx_task() {
                 timeout_count += 1;
 
                 if timeout_count > 10 {
-                    error!("[UART Jetson] timeout");
+                    // error!("[UART Jetson] timeout");
                     G_MSG_RX.lock().await.vel = nv1_msg::hub::Velocity {
                         x: 0.0,
                         y: 0.0,
