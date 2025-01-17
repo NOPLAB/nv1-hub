@@ -15,21 +15,20 @@ cortex-m = { version = "0.7.7", features = [
 cortex-m-rt = "0.7.3"
 defmt = { version = "0.3.8", optional = true }
 defmt-rtt = { version = "0.4.1", optional = true }
-embassy-executor = { version = "0.6.0", features = [
+embassy-executor = { version = "0.7.0", features = [
     "arch-cortex-m",
     "executor-thread",
-    "integrated-timers",
 ] }
 embassy-futures = "0.1.1"
-embassy-stm32 = { version = "0.1.0", features = [
+embassy-stm32 = { version = "0.2.0", features = [
     "memory-x",
     "stm32f446re",
     "time-driver-any",
     "exti",
 ] }
-embassy-sync = "0.6.0"
-embassy-time = { version = "0.3.2", features = ["tick-hz-32_768"] }
-embedded-alloc = "0.5.1"
+embassy-sync = "0.6.2"
+embassy-time = { version = "0.4.0", features = ["tick-hz-32_768"] }
+embedded-alloc = "0.6.0"
 libm = "0.2.8"
 panic-halt = "0.2.0"
 panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
@@ -41,6 +40,7 @@ bno08x-rvc = "0.1.2"
 bbqueue = "0.5.1"
 num-traits = { version = "0.2.19", default-features = false }
 postcard = "1.0.10"
+embedded-hal = "1.0"
 
 [[bin]]
 name = "nv1-hub-stm32"

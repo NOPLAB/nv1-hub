@@ -16,9 +16,10 @@ use alloc::vec::Vec;
 use alloc::{boxed::Box, vec};
 use defmt::error;
 use embassy_stm32::flash::{Blocking, Flash};
+use embassy_stm32::mode;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Timer};
-use embedded_alloc::Heap;
+use embedded_alloc::LlffHeap as Heap;
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -69,10 +70,7 @@ bind_interrupts!(struct Irqs {
 
 static BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
 
-static G_UART: Mutex<
-    ThreadModeRawMutex,
-    Option<Uart<'static, peripherals::USART3, peripherals::DMA1_CH3, peripherals::DMA1_CH1>>,
-> = Mutex::new(None);
+static G_UART: Mutex<ThreadModeRawMutex, Option<Uart<'static, mode::Async>>> = Mutex::new(None);
 
 static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
     Mutex::new(nv1_msg::hub::HubMsgPackRx {
@@ -203,8 +201,8 @@ async fn main(spawner: Spawner) {
     Timer::after(Duration::from_millis(100)).await;
 
     let mut delay = Delay;
-    let mut adc1 = Adc::new(p.ADC1, &mut delay);
-    adc1.set_sample_time(embassy_stm32::adc::SampleTime::Cycles3);
+    let mut adc1 = Adc::new(p.ADC1);
+    adc1.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES3);
 
     let mut line_s0 = Output::new(p.PB12, Level::Low, embassy_stm32::gpio::Speed::High);
     let mut line_s1 = Output::new(p.PB13, Level::Low, embassy_stm32::gpio::Speed::High);
@@ -261,16 +259,7 @@ async fn main(spawner: Spawner) {
 
     let mut config = i2c::Config::default();
     config.timeout = Duration::from_millis(100);
-    let ssd1306_i2c = I2c::new(
-        p.I2C3,
-        p.PA8,
-        p.PC9,
-        Irqs,
-        NoDma,
-        NoDma,
-        Hertz::khz(400),
-        config,
-    );
+    let ssd1306_i2c = I2c::new_blocking(p.I2C3, p.PA8, p.PC9, Hertz::khz(400), config);
 
     let ssd1306_interface = I2CDisplayInterface::new(ssd1306_i2c);
     let mut ssd1306 = Ssd1306::new(
@@ -378,7 +367,7 @@ async fn main(spawner: Spawner) {
         Box<
             dyn Element<
                 Ssd1306<
-                    I2CInterface<I2c<peripherals::I2C3>>,
+                    I2CInterface<I2c<mode::Blocking>>,
                     DisplaySize128x64,
                     BufferedGraphicsMode<DisplaySize128x64>,
                 >,
@@ -396,7 +385,7 @@ async fn main(spawner: Spawner) {
         Box<
             dyn Menu<
                 Ssd1306<
-                    I2CInterface<I2c<peripherals::I2C3>>,
+                    I2CInterface<I2c<mode::Blocking>>,
                     DisplaySize128x64,
                     BufferedGraphicsMode<DisplaySize128x64>,
                 >,
@@ -511,9 +500,9 @@ async fn main(spawner: Spawner) {
                 ir_s3.set_low();
             }
 
-            adc_line[i] = adc1.read(&mut p.PC0);
-            adc_line[i + 16] = adc1.read(&mut p.PC1);
-            adc_ir[i] = adc1.read(&mut p.PC2);
+            adc_line[i] = adc1.blocking_read(&mut p.PC0);
+            adc_line[i + 16] = adc1.blocking_read(&mut p.PC1);
+            adc_ir[i] = adc1.blocking_read(&mut p.PC2);
         }
 
         let adc_line = adc_line
@@ -627,7 +616,7 @@ async fn main(spawner: Spawner) {
         //     ir_y
         // );
 
-        let adc_have_ball = adc1.read(&mut p.PC3);
+        let adc_have_ball = adc1.blocking_read(&mut p.PC3);
 
         // info!("line_strength: {}", line_strength);
         // info!("line_strength: {}", settings.borrow_mut().line_strength);
