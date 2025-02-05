@@ -22,7 +22,6 @@ use alloc::{boxed::Box, vec};
 use bbqueue::BBBuffer;
 use defmt::error;
 use embassy_executor::Spawner;
-use embassy_futures::block_on;
 use embassy_stm32::flash::{Blocking, Flash};
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::mode;
@@ -76,9 +75,10 @@ bind_interrupts!(struct Irqs {
     I2C3_ER => i2c::ErrorInterruptHandler<peripherals::I2C3>;
 });
 
-static BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
+static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
 
-static G_UART: Mutex<ThreadModeRawMutex, Option<Uart<'static, mode::Async>>> = Mutex::new(None);
+static G_UART_JETSON: Mutex<ThreadModeRawMutex, Option<Uart<'static, mode::Async>>> =
+    Mutex::new(None);
 
 static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
     Mutex::new(nv1_msg::hub::HubMsgPackRx {
@@ -152,6 +152,7 @@ where
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // initialize static heap
     {
         use core::mem::MaybeUninit;
         const HEAP_SIZE: usize = 1024;
@@ -159,10 +160,12 @@ async fn main(spawner: Spawner) {
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
 
+    // initialize peripherals
     let mut p = embassy_stm32::init(Default::default());
 
-    let mut uart3_config = Config::default();
-    uart3_config.baudrate = 115200;
+    // initialize UARTs
+    let mut uart_jetson_config = Config::default();
+    uart_jetson_config.baudrate = 115200;
     let uart_jetson = Uart::new(
         p.USART3,
         p.PC5,
@@ -170,14 +173,13 @@ async fn main(spawner: Spawner) {
         Irqs,
         p.DMA1_CH3,
         p.DMA1_CH1,
-        uart3_config,
+        uart_jetson_config,
     )
     .unwrap();
+    G_UART_JETSON.lock().await.replace(uart_jetson);
 
-    G_UART.lock().await.replace(uart_jetson);
-
-    let mut uart4_config = Config::default();
-    uart4_config.baudrate = 115200;
+    let mut uart_md_config = Config::default();
+    uart_md_config.baudrate = 115200;
     let mut uart_md = Uart::new(
         p.UART4,
         p.PC11,
@@ -185,12 +187,12 @@ async fn main(spawner: Spawner) {
         Irqs,
         p.DMA1_CH4,
         p.DMA1_CH2,
-        uart4_config,
+        uart_md_config,
     )
     .unwrap();
 
-    let mut uart6_config = Config::default();
-    uart6_config.baudrate = bno08x_rvc::BNO08X_UART_RVC_BAUD_RATE;
+    let mut uart_bno_config = Config::default();
+    uart_bno_config.baudrate = bno08x_rvc::BNO08X_UART_RVC_BAUD_RATE;
     let mut uart_bno = Uart::new(
         p.USART6,
         p.PC7,
@@ -198,16 +200,18 @@ async fn main(spawner: Spawner) {
         Irqs,
         p.DMA2_CH6,
         p.DMA2_CH1,
-        uart6_config,
+        uart_bno_config,
     )
     .unwrap();
 
+    // reset bno08x
     let mut gpio_reset = Output::new(p.PA0, Level::High, embassy_stm32::gpio::Speed::Low);
     gpio_reset.set_low();
     Timer::after(Duration::from_millis(10)).await;
     gpio_reset.set_high();
     Timer::after(Duration::from_millis(100)).await;
 
+    // initialize ADC
     let mut adc1 = Adc::new(p.ADC1);
     adc1.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES3);
 
@@ -243,21 +247,20 @@ async fn main(spawner: Spawner) {
         1.0,
     );
 
+    // initialize flash
     let f = Rc::new(RefCell::new(Flash::new_blocking(p.FLASH)));
-
     let settings = Rc::new(RefCell::new(
         flash_read(&mut f.clone().borrow_mut()).unwrap_or(Settings {
             line_strength: 0.12,
         }),
     ));
-
     if settings.borrow_mut().line_strength.is_nan() {
         settings.borrow_mut().line_strength = 0.12;
 
         flash_write(&mut f.clone().borrow_mut(), &settings.borrow_mut()).unwrap();
     }
 
-    info!("Line strength: {}", settings.borrow_mut().line_strength);
+    info!("line strength: {}", settings.borrow_mut().line_strength);
 
     let gpio_ui_toggle = Input::new(p.PC12, Pull::None);
     let gpio_ui_up = Input::new(p.PC13, Pull::None);
@@ -412,7 +415,7 @@ async fn main(spawner: Spawner) {
         display.flush().unwrap();
     }
 
-    let (mut proc, mut parser) = match bno08x_rvc::create(BB.borrow()) {
+    let (mut proc, mut parser) = match bno08x_rvc::create(G_BB.borrow()) {
         Ok((proc, pars)) => (proc, pars),
         Err(_e) => {
             error!("Can't create bno08x-rvc");
@@ -620,7 +623,8 @@ async fn main(spawner: Spawner) {
         // info!("IR over count: {}", adc_ir_over_count);
 
         let ir_angle = libm::atan2f(ir_y, ir_x);
-        info!("IR angle: {}", ir_angle);
+        // info!("IR angle: {}", ir_angle);
+
         const IR_ANGLE_THRESHOLD: f32 = 0.3;
         let ir_vel = if adc_ir_over_count > 13
             && ir_angle > PI / 2.0 - IR_ANGLE_THRESHOLD
@@ -649,7 +653,7 @@ async fn main(spawner: Spawner) {
         let vel_x;
         let vel_y;
         if let Some((line_vel_x, line_vel_y)) = line_vel {
-            // info!("[LINE] Line detected");
+            info!("[LINE] Line detected");
             vel_x = line_vel_x * 2.0;
             vel_y = line_vel_y * 2.0;
         } else if let Some((ir_x, ir_y)) = ir_vel {
@@ -663,7 +667,6 @@ async fn main(spawner: Spawner) {
 
         // info!("Vel X: {}, Vel Y: {}", vel_x, vel_y);
 
-        // let rotation_target = -msg.vel.angle; // reversed
         let rotation_target = 0.0;
 
         rotation_pid.setpoint(rotation_target);
@@ -722,20 +725,20 @@ async fn main(spawner: Spawner) {
             if ssd1306_init_success {
                 display.flush().unwrap();
             }
+
+            neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
+                let mut p = 0;
+                if loop_count % 32 == i {
+                    p = 255;
+                }
+
+                *c = RGB8 { r: p, g: p, b: p };
+            });
+
+            neo_pixel
+                .set_colors(&mut p.DMA1_CH0, &mut neo_pixel_data)
+                .await;
         }
-
-        neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
-            let mut p = 0;
-            if loop_count % 32 == i {
-                p = 255;
-            }
-
-            *c = RGB8 { r: p, g: p, b: p };
-        });
-
-        neo_pixel
-            .set_colors(&mut p.DMA1_CH0, &mut neo_pixel_data)
-            .await;
 
         // send data to Jetson
         let msg_tx = HubMsgPackTx {
@@ -776,7 +779,7 @@ async fn uart_jetson_rx_task() {
         let mut msg_with_cobs = [0u8; RX_DATA_SIZE];
         let timeout_res = with_timeout(
             Duration::from_millis(5),
-            G_UART
+            G_UART_JETSON
                 .lock()
                 .await
                 .as_mut()
@@ -832,7 +835,7 @@ async fn uart_jetson_tx_task() {
         let msg = G_MSG_TX.lock().await.take();
         match postcard::to_vec_cobs::<nv1_msg::hub::HubMsgPackTx, 64>(&msg) {
             Ok(msg_with_cobs) => {
-                match G_UART
+                match G_UART_JETSON
                     .lock()
                     .await
                     .as_mut()
