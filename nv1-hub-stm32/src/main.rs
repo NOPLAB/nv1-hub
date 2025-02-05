@@ -2,11 +2,16 @@
 
 #![no_std]
 #![no_main]
+#![feature(impl_trait_in_assoc_type)]
 
 mod fmt;
+mod neo_pixel;
 mod omni;
 
 extern crate alloc;
+
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
 
 use core::f32::consts::PI;
 use core::{borrow::Borrow, cell::RefCell};
@@ -14,18 +19,15 @@ use core::{borrow::Borrow, cell::RefCell};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, vec};
-use defmt::error;
-use embassy_stm32::flash::{Blocking, Flash};
-use embassy_stm32::mode;
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
-use embassy_time::{with_timeout, Duration, Timer};
-use embedded_alloc::LlffHeap as Heap;
-
-#[global_allocator]
-static HEAP: Heap = Heap::empty();
-
 use bbqueue::BBBuffer;
+use defmt::error;
 use embassy_executor::Spawner;
+use embassy_futures::block_on;
+use embassy_stm32::flash::{Blocking, Flash};
+use embassy_stm32::gpio::OutputType;
+use embassy_stm32::mode;
+use embassy_stm32::timer::low_level::CountingMode;
+use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
 use embassy_stm32::{
     adc::Adc,
     bind_interrupts,
@@ -35,9 +37,13 @@ use embassy_stm32::{
     time::Hertz,
     usart::{self, Config, Uart},
 };
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
+use embassy_time::{with_timeout, Duration, Timer};
+use embedded_alloc::LlffHeap as Heap;
 use embedded_graphics::prelude::{Point, Size};
 use fmt::info;
 use libm::{cosf, powf, sinf, sqrtf};
+use neo_pixel::NeoPixelPwm;
 use num_traits::{AsPrimitive, Num};
 use nv1_hub_ui::elements::{Element, Slider, SliderOption, Text, TextOption, Value, ValueOption};
 use nv1_hub_ui::menu::{Menu, MenuOption};
@@ -48,11 +54,15 @@ use nv1_hub_ui::{
 };
 use nv1_hub_ui::{EventKey, HubUIOption};
 use nv1_msg::hub::HubMsgPackTx;
-#[cfg(not(feature = "defmt"))]
-use panic_halt as _;
+
+use rgb::RGB8;
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::prelude::I2CInterface;
 use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306};
+
+#[cfg(not(feature = "defmt"))]
+use panic_halt as _;
+
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
@@ -413,6 +423,25 @@ async fn main(spawner: Spawner) {
     let shutdown = shutdown.clone();
     let reboot = reboot.clone();
 
+    let mut neo_pixel_data = [RGB8::default(); 32];
+    for c in neo_pixel_data.iter_mut() {
+        *c = RGB8 { r: 0, g: 0, b: 0 };
+    }
+
+    let neo_pixel_pwm_hz = Hertz::khz(500);
+
+    let neo_pixel_pwm = SimplePwm::new(
+        p.TIM4,
+        Some(PwmPin::new_ch1(p.PB6, OutputType::PushPull)),
+        None,
+        None,
+        None,
+        neo_pixel_pwm_hz,
+        CountingMode::EdgeAlignedUp,
+    );
+
+    let mut neo_pixel = NeoPixelPwm::new(neo_pixel_pwm, neo_pixel_pwm_hz);
+
     let mut yaw = 0.0;
 
     let mut rotation_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
@@ -428,18 +457,16 @@ async fn main(spawner: Spawner) {
     spawner.spawn(uart_jetson_rx_task()).unwrap();
     spawner.spawn(uart_jetson_tx_task()).unwrap();
 
-    let mut loop_count = 0;
-
     enum AdcState {
         OnGround,
         OnLine(f32, f32, f32),
         OutOfLineWithCenter(f32, f32, f32, u32),
     }
-
     let mut prev_adc_state = AdcState::OnGround;
 
     info!("nv1-hub initialized");
 
+    let mut loop_count = 0;
     loop {
         let mut buf = [0u8; 19];
         uart_bno.read(&mut buf).await.unwrap();
@@ -696,6 +723,19 @@ async fn main(spawner: Spawner) {
                 display.flush().unwrap();
             }
         }
+
+        neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
+            let mut p = 0;
+            if loop_count % 32 == i {
+                p = 255;
+            }
+
+            *c = RGB8 { r: p, g: p, b: p };
+        });
+
+        neo_pixel
+            .set_colors(&mut p.DMA1_CH0, &mut neo_pixel_data)
+            .await;
 
         // send data to Jetson
         let msg_tx = HubMsgPackTx {

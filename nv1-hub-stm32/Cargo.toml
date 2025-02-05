@@ -18,6 +18,7 @@ defmt-rtt = { version = "0.4.1", optional = true }
 embassy-executor = { version = "0.7.0", features = [
     "arch-cortex-m",
     "executor-thread",
+    "nightly",
 ] }
 embassy-futures = "0.1.1"
 embassy-stm32 = { version = "0.2.0", features = [
@@ -40,7 +41,8 @@ bno08x-rvc = "0.1.2"
 bbqueue = "0.5.1"
 num-traits = { version = "0.2.19", default-features = false }
 postcard = "1.0.10"
-embedded-hal = "1.0"
+embedded-hal-compat = "0.13.0"
+rgb = "0.8.50"
 
 [[bin]]
 name = "nv1-hub-stm32"
@@ -56,7 +58,7 @@ incremental = true
 [profile.release]
 debug = false
 lto = true
-opt-level = "z"
+opt-level = 3
 incremental = true
 
 [features]
