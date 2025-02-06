@@ -22,7 +22,8 @@ use alloc::{boxed::Box, vec};
 use bbqueue::BBBuffer;
 use defmt::error;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{RingBufferedAdc, SampleTime, Sequence};
+use embassy_futures::select::select3;
+use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::flash::{Blocking, Flash};
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::mode;
@@ -31,7 +32,7 @@ use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
 use embassy_stm32::{
     adc::Adc,
     bind_interrupts,
-    gpio::{Input, Level, Output, Pull},
+    gpio::{Level, Output, Pull},
     i2c::{self, I2c},
     peripherals,
     time::Hertz,
@@ -62,6 +63,7 @@ use ssd1306::{mode::DisplayConfig, size::DisplaySize128x64, I2CDisplayInterface,
 
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+use static_cell::StaticCell;
 
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
@@ -77,7 +79,6 @@ bind_interrupts!(struct Irqs {
 });
 
 static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
-
 static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
     Mutex::new(nv1_msg::hub::HubMsgPackRx {
         vel: nv1_msg::hub::Velocity {
@@ -87,7 +88,6 @@ static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
         },
         kick: false,
     });
-
 static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::HubMsgPackTx>> =
     Mutex::new(RefCell::new(nv1_msg::hub::HubMsgPackTx {
         pause: false,
@@ -110,6 +110,7 @@ static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::HubMsgPackTx>> 
         },
         have_ball: false,
     }));
+static G_UI_EVENT_QUEUE: Mutex<ThreadModeRawMutex, Vec<EventKey>> = Mutex::new(Vec::new());
 
 fn generate_adc_vec<T>(sin: &mut [T], cos: &mut [T], offset: f32, one_angle: f32, mul: f32)
 where
@@ -257,22 +258,37 @@ async fn main(spawner: Spawner) {
 
     info!("line strength: {}", settings.borrow_mut().line_strength);
 
-    let gpio_ui_toggle = Input::new(p.PC12, Pull::None);
-    let gpio_ui_up = Input::new(p.PC13, Pull::None);
-    let gpio_ui_down = Input::new(p.PC14, Pull::None);
-    let gpio_ui_enter = Input::new(p.PC15, Pull::None);
+    let gpio_ui_toggle = ExtiInput::new(p.PC12, p.EXTI12, Pull::None);
+    let gpio_ui_up = ExtiInput::new(p.PC13, p.EXTI13, Pull::None);
+    let gpio_ui_down = ExtiInput::new(p.PC14, p.EXTI14, Pull::None);
+    let gpio_ui_enter = ExtiInput::new(p.PC15, p.EXTI15, Pull::None);
 
     let mut config = i2c::Config::default();
     config.timeout = Duration::from_millis(100);
     let ssd1306_i2c = I2c::new_blocking(p.I2C3, p.PA8, p.PC9, Hertz::khz(400), config);
 
     let ssd1306_interface = I2CDisplayInterface::new(ssd1306_i2c);
-    let mut ssd1306 = Ssd1306::new(
+    let ssd1306 = Ssd1306::new(
         ssd1306_interface,
         DisplaySize128x64,
         ssd1306::prelude::DisplayRotation::Rotate0,
     )
     .into_buffered_graphics_mode();
+
+    static SSD1306: StaticCell<
+        Ssd1306<
+            I2CInterface<I2c<mode::Blocking>>,
+            DisplaySize128x64,
+            BufferedGraphicsMode<DisplaySize128x64>,
+        >,
+    > = StaticCell::new();
+
+    let ssd1306: &'static mut Ssd1306<
+        I2CInterface<I2c<mode::Blocking>>,
+        DisplaySize128x64,
+        BufferedGraphicsMode<DisplaySize128x64>,
+    > = SSD1306.init(ssd1306);
+
     let mut ssd1306_init_success = false;
     match ssd1306.init() {
         Ok(_) => {
@@ -404,7 +420,7 @@ async fn main(spawner: Spawner) {
             cursor_line_len: 4,
         },
     ))];
-    let mut ui = HubUI::new(&mut ssd1306, menu, ui_option);
+    let mut ui = HubUI::new(ssd1306, menu, ui_option);
     let display = ui.update(&Event::None);
     if ssd1306_init_success {
         display.flush().unwrap();
@@ -461,6 +477,9 @@ async fn main(spawner: Spawner) {
     let mut prev_adc_state = AdcState::OnGround;
 
     spawner.must_spawn(uart_jetson_rx_task(uart_jetson));
+    if ssd1306_init_success {
+        spawner.must_spawn(ui_task(ui, gpio_ui_up, gpio_ui_down, gpio_ui_enter));
+    }
 
     info!("[nv1-hub] initialized");
 
@@ -707,20 +726,6 @@ async fn main(spawner: Spawner) {
 
         // UI update
         if loop_count % 15 == 0 {
-            let event = if gpio_ui_up.is_high() {
-                Event::KeyDown(EventKey::Up)
-            } else if gpio_ui_down.is_high() {
-                Event::KeyDown(EventKey::Down)
-            } else if gpio_ui_enter.is_high() {
-                Event::KeyDown(EventKey::Enter)
-            } else {
-                Event::None
-            };
-            let display = ui.update(&event);
-            if ssd1306_init_success {
-                display.flush().unwrap();
-            }
-
             neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
                 let mut p = 0;
                 if loop_count % 32 == i {
@@ -838,6 +843,45 @@ async fn uart_jetson_rx_task(mut uart: Uart<'static, mode::Async>) {
         }
 
         Timer::after_millis(10).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn ui_task(
+    mut ui: HubUI<
+        'static,
+        Ssd1306<
+            I2CInterface<I2c<'static, mode::Blocking>>,
+            DisplaySize128x64,
+            BufferedGraphicsMode<DisplaySize128x64>,
+        >,
+    >,
+    mut gpio_ui_up: ExtiInput<'static>,
+    mut gpio_ui_down: ExtiInput<'static>,
+    mut gpio_ui_enter: ExtiInput<'static>,
+) {
+    loop {
+        select3(
+            gpio_ui_up.wait_for_any_edge(),
+            gpio_ui_down.wait_for_any_edge(),
+            gpio_ui_enter.wait_for_any_edge(),
+        )
+        .await;
+
+        let event = if gpio_ui_up.is_high() {
+            Event::KeyDown(EventKey::Up)
+        } else if gpio_ui_down.is_high() {
+            Event::KeyDown(EventKey::Down)
+        } else if gpio_ui_enter.is_high() {
+            Event::KeyDown(EventKey::Enter)
+        } else {
+            Event::None
+        };
+
+        let display = ui.update(&event);
+        display.flush().unwrap();
+
+        info!("UI event");
     }
 }
 
