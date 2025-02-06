@@ -869,27 +869,36 @@ async fn neo_pixel_task(
     mut neo_pixel: NeoPixelPwm<peripherals::TIM4>,
     dma: &'static mut peripherals::DMA1_CH0,
 ) {
-    let mut loop_count = 0;
-
     let mut neo_pixel_data = [RGB8::default(); 32];
     for c in neo_pixel_data.iter_mut() {
         *c = RGB8 { r: 0, g: 0, b: 0 };
     }
 
+    let mut prev_index = 0;
+    let mut loop_count = 0;
     loop {
-        neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
-            let mut p = 0;
-            if loop_count % 32 == i {
-                p = 255;
-            }
+        // neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
+        //     let mut p = 0;
+        //     if loop_count % 32 == i {
+        //         p = 255;
+        //     }
 
-            *c = RGB8 { r: p, g: p, b: p };
-        });
+        //     *c = RGB8 { r: p, g: p, b: p };
+        // });
+
+        let index = loop_count % 32;
+        neo_pixel_data[prev_index] = RGB8 { r: 0, g: 0, b: 0 };
+        neo_pixel_data[index] = RGB8 {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        prev_index = index;
 
         neo_pixel.set_colors(dma, &mut neo_pixel_data).await;
 
         loop_count += 1;
-        Timer::after(Duration::from_millis(30)).await;
+        // Timer::after(Duration::from_millis(30)).await;
     }
 }
 
