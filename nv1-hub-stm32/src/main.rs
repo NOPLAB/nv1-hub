@@ -437,11 +437,6 @@ async fn main(spawner: Spawner) {
     let shutdown = shutdown.clone();
     let reboot = reboot.clone();
 
-    let mut neo_pixel_data = [RGB8::default(); 32];
-    for c in neo_pixel_data.iter_mut() {
-        *c = RGB8 { r: 0, g: 0, b: 0 };
-    }
-
     let neo_pixel_pwm_hz = Hertz::khz(500);
 
     let neo_pixel_pwm = SimplePwm::new(
@@ -455,6 +450,8 @@ async fn main(spawner: Spawner) {
     );
 
     let mut neo_pixel = NeoPixelPwm::new(neo_pixel_pwm, neo_pixel_pwm_hz);
+    static NEO_PIXEL_DMA: StaticCell<peripherals::DMA1_CH0> = StaticCell::new();
+    let neo_pixel_dma: &'static mut peripherals::DMA1_CH0 = NEO_PIXEL_DMA.init(p.DMA1_CH0);
 
     // loop variables
     let mut yaw = 0.0;
@@ -480,10 +477,10 @@ async fn main(spawner: Spawner) {
     if ssd1306_init_success {
         spawner.must_spawn(ui_task(ui, gpio_ui_up, gpio_ui_down, gpio_ui_enter));
     }
+    spawner.must_spawn(neo_pixel_task(neo_pixel, neo_pixel_dma));
 
     info!("[nv1-hub] initialized");
 
-    let mut loop_count = 0;
     let mut prev_time = Instant::now();
     loop {
         let mut buf = [0u8; 19];
@@ -724,22 +721,6 @@ async fn main(spawner: Spawner) {
             }
         };
 
-        // UI update
-        if loop_count % 15 == 0 {
-            neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
-                let mut p = 0;
-                if loop_count % 32 == i {
-                    p = 255;
-                }
-
-                *c = RGB8 { r: p, g: p, b: p };
-            });
-
-            neo_pixel
-                .set_colors(&mut p.DMA1_CH0, &mut neo_pixel_data)
-                .await;
-        }
-
         // let adc_have_ball = adc.blocking_read(&mut p.PC3);
 
         // send data to Jetson
@@ -766,8 +747,6 @@ async fn main(spawner: Spawner) {
         };
 
         G_MSG_TX.lock().await.replace(msg_tx);
-
-        loop_count += 1;
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
@@ -882,6 +861,35 @@ async fn ui_task(
         display.flush().unwrap();
 
         info!("UI event");
+    }
+}
+
+#[embassy_executor::task]
+async fn neo_pixel_task(
+    mut neo_pixel: NeoPixelPwm<peripherals::TIM4>,
+    dma: &'static mut peripherals::DMA1_CH0,
+) {
+    let mut loop_count = 0;
+
+    let mut neo_pixel_data = [RGB8::default(); 32];
+    for c in neo_pixel_data.iter_mut() {
+        *c = RGB8 { r: 0, g: 0, b: 0 };
+    }
+
+    loop {
+        neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
+            let mut p = 0;
+            if loop_count % 32 == i {
+                p = 255;
+            }
+
+            *c = RGB8 { r: p, g: p, b: p };
+        });
+
+        neo_pixel.set_colors(dma, &mut neo_pixel_data).await;
+
+        loop_count += 1;
+        Timer::after(Duration::from_millis(30)).await;
     }
 }
 
