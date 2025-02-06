@@ -22,6 +22,7 @@ use alloc::{boxed::Box, vec};
 use bbqueue::BBBuffer;
 use defmt::error;
 use embassy_executor::Spawner;
+use embassy_stm32::adc::{RingBufferedAdc, SampleTime, Sequence};
 use embassy_stm32::flash::{Blocking, Flash};
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::mode;
@@ -37,7 +38,7 @@ use embassy_stm32::{
     usart::{self, Config, Uart},
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use embedded_alloc::LlffHeap as Heap;
 use embedded_graphics::prelude::{Point, Size};
 use fmt::info;
@@ -76,9 +77,6 @@ bind_interrupts!(struct Irqs {
 });
 
 static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
-
-static G_UART_JETSON: Mutex<ThreadModeRawMutex, Option<Uart<'static, mode::Async>>> =
-    Mutex::new(None);
 
 static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
     Mutex::new(nv1_msg::hub::HubMsgPackRx {
@@ -176,7 +174,6 @@ async fn main(spawner: Spawner) {
         uart_jetson_config,
     )
     .unwrap();
-    G_UART_JETSON.lock().await.replace(uart_jetson);
 
     let mut uart_md_config = Config::default();
     uart_md_config.baudrate = 115200;
@@ -212,8 +209,8 @@ async fn main(spawner: Spawner) {
     Timer::after(Duration::from_millis(100)).await;
 
     // initialize ADC
-    let mut adc1 = Adc::new(p.ADC1);
-    adc1.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES3);
+    let mut adc = Adc::new(p.ADC1);
+    adc.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES3);
 
     let mut line_s0 = Output::new(p.PB12, Level::Low, embassy_stm32::gpio::Speed::High);
     let mut line_s1 = Output::new(p.PB13, Level::Low, embassy_stm32::gpio::Speed::High);
@@ -227,7 +224,6 @@ async fn main(spawner: Spawner) {
 
     let mut adc_line_sin = [0.0f32; 32];
     let mut adc_line_cos = [0.0f32; 32];
-
     generate_adc_vec(
         &mut adc_line_sin,
         &mut adc_line_cos,
@@ -238,7 +234,6 @@ async fn main(spawner: Spawner) {
 
     let mut adc_ir_sin = [0.0f32; 16];
     let mut adc_ir_cos = [0.0f32; 16];
-
     generate_adc_vec(
         &mut adc_ir_sin,
         &mut adc_ir_cos,
@@ -445,6 +440,7 @@ async fn main(spawner: Spawner) {
 
     let mut neo_pixel = NeoPixelPwm::new(neo_pixel_pwm, neo_pixel_pwm_hz);
 
+    // loop variables
     let mut yaw = 0.0;
 
     let mut rotation_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
@@ -457,9 +453,6 @@ async fn main(spawner: Spawner) {
     let wheel_calc3 = omni::OmniWheel::new(225.0_f32.to_radians(), WHEEL_R, THREAD);
     let wheel_calc4 = omni::OmniWheel::new(135.0_f32.to_radians(), WHEEL_R, THREAD);
 
-    spawner.spawn(uart_jetson_rx_task()).unwrap();
-    spawner.spawn(uart_jetson_tx_task()).unwrap();
-
     enum AdcState {
         OnGround,
         OnLine(f32, f32, f32),
@@ -467,9 +460,12 @@ async fn main(spawner: Spawner) {
     }
     let mut prev_adc_state = AdcState::OnGround;
 
-    info!("nv1-hub initialized");
+    spawner.must_spawn(uart_jetson_rx_task(uart_jetson));
+
+    info!("[nv1-hub] initialized");
 
     let mut loop_count = 0;
+    let mut prev_time = Instant::now();
     loop {
         let mut buf = [0u8; 19];
         uart_bno.read(&mut buf).await.unwrap();
@@ -477,12 +473,13 @@ async fn main(spawner: Spawner) {
         parser
             .worker(|frame| {
                 yaw = -((frame.as_pretty_frame().yaw as f32).to_radians());
-                // info!("Yaw: {}", yaw);
+                // info!("yaw: {}", yaw);
             })
             .unwrap();
 
         let mut adc_line = [0u16; 32];
         let mut adc_ir = [0u16; 16];
+        let adc_have_ball = adc.blocking_read(&mut p.PC3);
         for i in 0..16 {
             if i & 0b0001 != 0 {
                 line_s0.set_high();
@@ -526,9 +523,9 @@ async fn main(spawner: Spawner) {
                 ir_s3.set_low();
             }
 
-            adc_line[i] = adc1.blocking_read(&mut p.PC0);
-            adc_line[i + 16] = adc1.blocking_read(&mut p.PC1);
-            adc_ir[i] = adc1.blocking_read(&mut p.PC2);
+            adc_line[i] = adc.blocking_read(&mut p.PC0);
+            adc_line[i + 16] = adc.blocking_read(&mut p.PC1);
+            adc_ir[i] = adc.blocking_read(&mut p.PC2);
         }
 
         let adc_line = adc_line
@@ -642,8 +639,6 @@ async fn main(spawner: Spawner) {
         //     ir_y
         // );
 
-        let adc_have_ball = adc1.blocking_read(&mut p.PC3);
-
         // info!("line_strength: {}", line_strength);
         // info!("line_strength: {}", settings.borrow_mut().line_strength);
 
@@ -740,6 +735,8 @@ async fn main(spawner: Spawner) {
                 .await;
         }
 
+        // let adc_have_ball = adc.blocking_read(&mut p.PC3);
+
         // send data to Jetson
         let msg_tx = HubMsgPackTx {
             pause: gpio_ui_toggle.is_high(),
@@ -766,27 +763,24 @@ async fn main(spawner: Spawner) {
         G_MSG_TX.lock().await.replace(msg_tx);
 
         loop_count += 1;
+
+        let now_time = Instant::now();
+        let elapsed_time = now_time - prev_time;
+        info!("elapsed time: {}", elapsed_time.as_millis());
+        prev_time = now_time;
     }
 }
 
 #[embassy_executor::task]
-async fn uart_jetson_rx_task() {
+async fn uart_jetson_rx_task(mut uart: Uart<'static, mode::Async>) {
     const RX_DATA_SIZE: usize = 15;
 
     let mut timeout_count = 0;
 
     loop {
         let mut msg_with_cobs = [0u8; RX_DATA_SIZE];
-        let timeout_res = with_timeout(
-            Duration::from_millis(5),
-            G_UART_JETSON
-                .lock()
-                .await
-                .as_mut()
-                .unwrap()
-                .read(&mut msg_with_cobs),
-        )
-        .await;
+        let timeout_res =
+            with_timeout(Duration::from_millis(5), uart.read(&mut msg_with_cobs)).await;
         match timeout_res {
             Ok(rx) => match rx {
                 Ok(_) => {
@@ -825,24 +819,11 @@ async fn uart_jetson_rx_task() {
                 }
             }
         }
-        Timer::after_millis(10).await;
-    }
-}
 
-#[embassy_executor::task]
-async fn uart_jetson_tx_task() {
-    loop {
         let msg = G_MSG_TX.lock().await.take();
         match postcard::to_vec_cobs::<nv1_msg::hub::HubMsgPackTx, 64>(&msg) {
             Ok(msg_with_cobs) => {
-                match G_UART_JETSON
-                    .lock()
-                    .await
-                    .as_mut()
-                    .unwrap()
-                    .write(&msg_with_cobs)
-                    .await
-                {
+                match uart.write(&msg_with_cobs).await {
                     Ok(_) => {
                         // info!("[UART Jetson] sent data, len: {}", msg_with_cobs.len());
                     }
@@ -855,6 +836,7 @@ async fn uart_jetson_tx_task() {
                 error!("[UART Jetson] postcard encode error");
             }
         }
+
         Timer::after_millis(10).await;
     }
 }
