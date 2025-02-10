@@ -95,7 +95,7 @@ where
     F: FnMut(&mut U) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {
-        let text = format!("{}: {}", self.title, self.value);
+        let text = format!("{}: {:<4.2}", self.title, self.value);
 
         let character_style = MonoTextStyle::new(&self.font, BinaryColor::On);
 
