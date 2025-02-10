@@ -102,7 +102,7 @@ fn main() -> anyhow::Result<()> {
         },
     };
 
-    let mut ui_text = Text::new(
+    let ui_text = Text::new(
         "Interface",
         TextOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
@@ -129,9 +129,10 @@ fn main() -> anyhow::Result<()> {
         },
     );
 
-    let mut ui_line = Value::new(
+    let ui_line = Value::new(
         "L",
         0,
+        |_| {},
         ValueOption {
             font: embedded_graphics::mono_font::ascii::FONT_6X10,
         },
