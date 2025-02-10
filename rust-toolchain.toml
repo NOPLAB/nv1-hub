@@ -1,7 +1,5 @@
-# This file was automatically generated.
-
 [toolchain]
-#channel = "1.80"
 channel = "nightly"
-components = ["rust-src", "rustfmt"]
+components = ["rust-src"]
 targets = ["thumbv7em-none-eabi"]
+profile = "default"
