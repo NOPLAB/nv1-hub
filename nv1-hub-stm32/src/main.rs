@@ -46,10 +46,10 @@ use fmt::info;
 use libm::{cosf, powf, sinf, sqrtf};
 use neo_pixel::NeoPixelPwm;
 use num_traits::{AsPrimitive, Num};
-use nv1_hub_ui::elements::{Element, Slider, SliderOption, Text, TextOption, Value, ValueOption};
-use nv1_hub_ui::menu::{Menu, MenuOption};
+use nv1_hub_ui::elements::{Element, Slider, Text, Value};
+use nv1_hub_ui::menu::MenuOption;
 use nv1_hub_ui::{
-    elements::{Button, ButtonOption},
+    elements::Button,
     menu::{ListMenu, ListMenuOption},
     Event, HubUI,
 };
@@ -305,12 +305,7 @@ async fn main(spawner: Spawner) {
         },
     };
 
-    let ui_text = Text::new(
-        "Interface",
-        TextOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
-    );
+    let ui_text = Text::new("Interface", embedded_graphics::mono_font::ascii::FONT_6X10);
 
     let shutdown = Rc::new(RefCell::new(false));
 
@@ -320,9 +315,7 @@ async fn main(spawner: Spawner) {
         move |pressed| {
             shutdown_clone.replace(pressed);
         },
-        ButtonOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let reboot = Rc::new(RefCell::new(false));
@@ -333,9 +326,7 @@ async fn main(spawner: Spawner) {
         move |pressed| {
             reboot_clone.replace(pressed);
         },
-        ButtonOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let line_value = Rc::new(RefCell::new(0.0));
@@ -347,9 +338,7 @@ async fn main(spawner: Spawner) {
         move |value| {
             *value = *line_value_clone.borrow_mut();
         },
-        ValueOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let settings_clone = settings.clone();
@@ -363,9 +352,7 @@ async fn main(spawner: Spawner) {
             settings_clone.borrow_mut().line_strength = value;
             flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
         },
-        SliderOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let settings_clone = settings.clone();
@@ -378,9 +365,7 @@ async fn main(spawner: Spawner) {
                 settings_clone.replace(flash_read(&mut f.borrow_mut()).unwrap());
             }
         },
-        ButtonOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let elements: Vec<
