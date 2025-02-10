@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
         Window,
     };
     use nv1_hub_ui::{
-        elements::{Button, ButtonOption, Element, Text, TextOption, Value, ValueOption},
+        elements::{Button, Element, Text, Value},
         menu::{ListMenu, ListMenuOption, MenuOption},
         Event, EventKey, HubUI, HubUIOption,
     };
@@ -44,21 +44,14 @@ fn main() -> anyhow::Result<()> {
         },
     };
 
-    let ui_text = Text::new(
-        "Interface",
-        TextOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
-    );
+    let ui_text = Text::new("Interface", embedded_graphics::mono_font::ascii::FONT_6X10);
 
     let ui_shutdown = Button::new(
         "Shutdown",
         |pressed| {
             G_SHUTDOWN.lock().as_mut().unwrap().replace(pressed);
         },
-        ButtonOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let ui_reboot = Button::new(
@@ -66,18 +59,14 @@ fn main() -> anyhow::Result<()> {
         |pressed| {
             G_REBOOT.lock().as_mut().unwrap().replace(pressed);
         },
-        ButtonOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let ui_line = Value::new(
         "L",
         0,
         |_| {},
-        ValueOption {
-            font: embedded_graphics::mono_font::ascii::FONT_6X10,
-        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
     let elements: Vec<Box<dyn Element<SimulatorDisplay<BinaryColor>>>> = vec![

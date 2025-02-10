@@ -821,6 +821,13 @@ async fn ui_task(
             DisplaySize128x64,
             BufferedGraphicsMode<DisplaySize128x64>,
         >,
+        ListMenu<
+            Ssd1306<
+                I2CInterface<I2c<'static, mode::Blocking>>,
+                DisplaySize128x64,
+                BufferedGraphicsMode<DisplaySize128x64>,
+            >,
+        >,
     >,
     mut gpio_ui_up: ExtiInput<'static>,
     mut gpio_ui_down: ExtiInput<'static>,
