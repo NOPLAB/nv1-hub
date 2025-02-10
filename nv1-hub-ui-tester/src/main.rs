@@ -44,14 +44,14 @@ fn main() -> anyhow::Result<()> {
         },
     };
 
-    let ui_text = Text::new("Interface", embedded_graphics::mono_font::ascii::FONT_6X10);
+    let ui_text = Text::new("Interface", embedded_graphics::mono_font::ascii::FONT_5X8);
 
     let ui_shutdown = Button::new(
         "Shutdown",
         |pressed| {
             G_SHUTDOWN.lock().as_mut().unwrap().replace(pressed);
         },
-        embedded_graphics::mono_font::ascii::FONT_6X10,
+        embedded_graphics::mono_font::ascii::FONT_5X8,
     );
 
     let ui_reboot = Button::new(
@@ -59,14 +59,16 @@ fn main() -> anyhow::Result<()> {
         |pressed| {
             G_REBOOT.lock().as_mut().unwrap().replace(pressed);
         },
-        embedded_graphics::mono_font::ascii::FONT_6X10,
+        embedded_graphics::mono_font::ascii::FONT_5X8,
     );
 
     let ui_line = Value::new(
         "L",
-        0,
-        |_| {},
-        embedded_graphics::mono_font::ascii::FONT_6X10,
+        0.0,
+        |value| {
+            *value += 0.1;
+        },
+        embedded_graphics::mono_font::ascii::FONT_5X8,
     );
 
     let elements: Vec<Box<dyn Element<SimulatorDisplay<BinaryColor>>>> = vec![
@@ -78,7 +80,7 @@ fn main() -> anyhow::Result<()> {
     let menu = vec![Box::new(ListMenu::new(
         elements,
         ListMenuOption {
-            vertical_num: 4,
+            vertical_num: 5,
             element_margin: 1,
             cursor_line_len: 4,
         },
