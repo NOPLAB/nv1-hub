@@ -23,6 +23,7 @@ fn main() -> anyhow::Result<()> {
         sdl2::Keycode, BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent,
         Window,
     };
+    use nv1_hub_ui::elements;
     use nv1_hub_ui::{
         elements::{Button, Element, Text, Value},
         menu::{ListMenu, ListMenuOption, MenuOption},
@@ -71,12 +72,14 @@ fn main() -> anyhow::Result<()> {
         embedded_graphics::mono_font::ascii::FONT_5X8,
     );
 
-    let elements: Vec<Box<dyn Element<SimulatorDisplay<BinaryColor>>>> = vec![
-        Box::new(ui_text),
-        Box::new(ui_shutdown),
-        Box::new(ui_reboot),
-        Box::new(ui_line),
+    let elements = elements![
+        SimulatorDisplay<BinaryColor>,
+        ui_text,
+        ui_shutdown,
+        ui_reboot,
+        ui_line
     ];
+
     let menu = vec![Box::new(ListMenu::new(
         elements,
         ListMenuOption {

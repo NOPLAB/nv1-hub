@@ -14,18 +14,18 @@ use num_traits::Num;
 
 use crate::Event;
 
-pub struct ElementInfo {
-    pub selected: bool,
-    pub position: Point,
-    pub size: Size,
-}
-
 pub trait Element<T>
 where
     T: DrawTarget<Color = BinaryColor>,
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error>;
     fn event(&mut self, event: &Event, info: ElementInfo) -> bool;
+}
+
+pub struct ElementInfo {
+    pub selected: bool,
+    pub position: Point,
+    pub size: Size,
 }
 
 #[derive(Debug, Clone, Copy)]

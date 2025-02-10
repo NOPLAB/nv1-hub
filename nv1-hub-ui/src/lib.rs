@@ -78,3 +78,16 @@ where
         }
     }
 }
+
+#[macro_export]
+macro_rules! elements {
+    ($t: ty, $( $x: expr ), *) => {
+        {
+            let mut elements: Vec<Box<dyn Element<$t>>> = Vec::new();
+            $(
+                elements.push(Box::new($x));
+            ) *
+            elements
+        }
+    };
+}
