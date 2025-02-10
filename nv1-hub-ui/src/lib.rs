@@ -25,6 +25,7 @@ pub enum EventKey {
 pub enum Event {
     None,
     KeyDown(EventKey),
+    KeyUp(EventKey),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,19 +33,24 @@ pub struct HubUIOption {
     pub menu_option: MenuOption,
 }
 
-pub struct HubUI<'a, T> {
+pub struct HubUI<'a, T, M>
+where
+    T: DrawTarget<Color = BinaryColor>,
+    M: Menu<T>,
+{
     option: HubUIOption,
     display: &'a mut T,
-    menu: Vec<Box<dyn Menu<T>>>,
+    menu: Vec<Box<M>>,
     menu_option: MenuOption,
 }
 
-impl<'a, T> HubUI<'a, T>
+impl<'a, T, M> HubUI<'a, T, M>
 where
     T: DrawTarget<Color = BinaryColor>,
     <T as DrawTarget>::Error: Debug,
+    M: Menu<T>,
 {
-    pub fn new(display: &'a mut T, menu: Vec<Box<dyn Menu<T>>>, option: HubUIOption) -> Self {
+    pub fn new(display: &'a mut T, menu: Vec<Box<M>>, option: HubUIOption) -> Self {
         let option_c = option.clone();
 
         HubUI {

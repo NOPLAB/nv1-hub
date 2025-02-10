@@ -401,17 +401,7 @@ async fn main(spawner: Spawner) {
         Box::new(ui_line_strength),
         Box::new(ui_settings_reset),
     ];
-    let menu: Vec<
-        Box<
-            dyn Menu<
-                Ssd1306<
-                    I2CInterface<I2c<mode::Blocking>>,
-                    DisplaySize128x64,
-                    BufferedGraphicsMode<DisplaySize128x64>,
-                >,
-            >,
-        >,
-    > = vec![Box::new(ListMenu::new(
+    let menu = vec![Box::new(ListMenu::new(
         elements,
         ListMenuOption {
             vertical_num: 4,

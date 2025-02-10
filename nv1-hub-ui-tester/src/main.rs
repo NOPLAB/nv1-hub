@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     };
     use nv1_hub_ui::{
         elements::{Button, ButtonOption, Element, Text, TextOption, Value, ValueOption},
-        menu::{ListMenu, ListMenuOption, Menu, MenuOption},
+        menu::{ListMenu, ListMenuOption, MenuOption},
         Event, EventKey, HubUI, HubUIOption,
     };
 
@@ -36,64 +36,6 @@ fn main() -> anyhow::Result<()> {
         .theme(BinaryColorTheme::OledWhite)
         .build();
     let mut window = Window::new("SSD1306", &output_settings);
-
-    // let elements: Vec<Box<dyn Element<SimulatorDisplay<BinaryColor>>>> = vec![
-    //     Box::new(nv1_hub_ui::elements::Button::new(
-    //         "Button 1",
-    //         nv1_hub_ui::elements::ButtonOption {
-    //             font: embedded_graphics::mono_font::ascii::FONT_6X10,
-    //         },
-    //     )),
-    //     Box::new(nv1_hub_ui::elements::Button::new(
-    //         "Button 2",
-    //         nv1_hub_ui::elements::ButtonOption {
-    //             font: embedded_graphics::mono_font::ascii::FONT_6X10,
-    //         },
-    //     )),
-    //     Box::new(nv1_hub_ui::elements::Button::new(
-    //         "Button 3",
-    //         nv1_hub_ui::elements::ButtonOption {
-    //             font: embedded_graphics::mono_font::ascii::FONT_6X10,
-    //         },
-    //     )),
-    //     Box::new(nv1_hub_ui::elements::Button::new(
-    //         "Button 4",
-    //         nv1_hub_ui::elements::ButtonOption {
-    //             font: embedded_graphics::mono_font::ascii::FONT_6X10,
-    //         },
-    //     )),
-    //     Box::new(nv1_hub_ui::elements::Text::new(
-    //         "Hello",
-    //         nv1_hub_ui::elements::TextOption {
-    //             font: embedded_graphics::mono_font::ascii::FONT_6X10,
-    //         },
-    //     )),
-    //     Box::new(nv1_hub_ui::elements::Slider::new(
-    //         0,
-    //         -50,
-    //         50,
-    //         1,
-    //         nv1_hub_ui::elements::SliderOption {
-    //             font: embedded_graphics::mono_font::ascii::FONT_6X10,
-    //         },
-    //     )),
-    // ];
-    // let menu: Vec<Box<dyn Menu<SimulatorDisplay<BinaryColor>>>> = vec![Box::new(ListMenu::new(
-    //     elements,
-    //     ListMenuOption {
-    //         vertical_num: 4,
-    //         element_margin: 1,
-    //         cursor_line_len: 4,
-    //     },
-    // ))];
-
-    // let options = HubUIOption {
-    //     menu_option: MenuOption {
-    //         position: Point::new(2 + 64, 2),
-    //         size: Size::new(62, 62),
-    //     },
-    // };
-    // let mut ui = nv1_hub_ui::HubUI::new(&mut display, menu, options);
 
     let ui_option = HubUIOption {
         menu_option: MenuOption {
@@ -144,7 +86,7 @@ fn main() -> anyhow::Result<()> {
         Box::new(ui_reboot),
         Box::new(ui_line),
     ];
-    let menu: Vec<Box<dyn Menu<SimulatorDisplay<BinaryColor>>>> = vec![Box::new(ListMenu::new(
+    let menu = vec![Box::new(ListMenu::new(
         elements,
         ListMenuOption {
             vertical_num: 4,
