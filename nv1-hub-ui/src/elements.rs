@@ -1,4 +1,4 @@
-use core::fmt::{write, Display};
+use core::fmt::Display;
 
 use alloc::format;
 use embedded_graphics::prelude::Primitive;
@@ -86,7 +86,7 @@ pub struct Value<T, F> {
 impl<T, F> Value<T, F>
 where
     T: Num + Copy,
-    F: Fn(&mut T) -> (),
+    F: FnMut(&mut T) -> (),
 {
     pub fn new(title: &'static str, value: T, request: F, option: ValueOption) -> Self {
         Value {
@@ -102,7 +102,7 @@ impl<T, U, F> Element<T> for Value<U, F>
 where
     T: DrawTarget<Color = BinaryColor>,
     U: Num + Copy + Display,
-    F: Fn(&mut U) -> (),
+    F: FnMut(&mut U) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {
         let text = format!("{}: {}", self.title, self.value);
@@ -158,7 +158,7 @@ where
 impl<T, F> Element<T> for Button<F>
 where
     T: DrawTarget<Color = BinaryColor>,
-    F: Fn(bool) -> (),
+    F: FnMut(bool) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {
         let style = if self.pressed {
@@ -256,7 +256,7 @@ impl<T, U, F> Element<T> for Slider<U, F>
 where
     T: DrawTarget<Color = BinaryColor>,
     U: Num + Copy + Display + PartialOrd,
-    F: Fn(U) -> (),
+    F: FnMut(U) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {
         let text = format!("{}", self.value);
