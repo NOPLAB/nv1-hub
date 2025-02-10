@@ -43,6 +43,7 @@ num-traits = { version = "0.2.19", default-features = false }
 postcard = "1.0.10"
 embedded-hal-compat = "0.13.0"
 rgb = "0.8.50"
+static_cell = "2.1.0"
 
 [[bin]]
 name = "nv1-hub-stm32"
