@@ -105,6 +105,16 @@ fn main() -> anyhow::Result<()> {
                         _ => Event::None,
                     };
                 }
+                SimulatorEvent::KeyUp { keycode, .. } => {
+                    println!("Key released: {:?}", keycode);
+
+                    ui_event = match keycode {
+                        Keycode::Up => Event::KeyUp(EventKey::Up),
+                        Keycode::Down => Event::KeyUp(EventKey::Down),
+                        Keycode::Return => Event::KeyUp(EventKey::Enter),
+                        _ => Event::None,
+                    };
+                }
                 _ => {
                     ui_event = Event::None;
                 }
