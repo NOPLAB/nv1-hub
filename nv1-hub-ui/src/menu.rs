@@ -11,7 +11,7 @@ use embedded_graphics::{
 
 use crate::elements::{Element, ElementInfo};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct MenuOption {
     pub position: Point,
     pub size: Size,

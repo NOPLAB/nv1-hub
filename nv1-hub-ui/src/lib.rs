@@ -14,21 +14,21 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
 use menu::{Menu, MenuOption};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKey {
     Up,
     Down,
     Enter,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     None,
     KeyDown(EventKey),
     KeyUp(EventKey),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct HubUIOption {
     pub menu_option: MenuOption,
 }
@@ -41,7 +41,6 @@ where
     option: HubUIOption,
     display: &'a mut T,
     menu: Vec<Box<M>>,
-    menu_option: MenuOption,
 }
 
 impl<'a, T, M> HubUI<'a, T, M>
@@ -51,13 +50,10 @@ where
     M: Menu<T>,
 {
     pub fn new(display: &'a mut T, menu: Vec<Box<M>>, option: HubUIOption) -> Self {
-        let option_c = option.clone();
-
         HubUI {
             option,
             display,
             menu,
-            menu_option: option_c.menu_option,
         }
     }
 
@@ -71,7 +67,7 @@ where
         self.display.clear(BinaryColor::Off).unwrap();
 
         for m in self.menu.iter() {
-            m.draw(self.display, &self.menu_option).unwrap();
+            m.draw(self.display, &self.option.menu_option).unwrap();
         }
 
         return self.display;
@@ -79,7 +75,7 @@ where
 
     fn event(&mut self, event: &Event) {
         for m in self.menu.iter_mut() {
-            m.event(event, &self.menu_option);
+            m.event(event, &self.option.menu_option);
         }
     }
 }
