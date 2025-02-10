@@ -110,7 +110,6 @@ static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::HubMsgPackTx>> 
         },
         have_ball: false,
     }));
-static G_UI_EVENT_QUEUE: Mutex<ThreadModeRawMutex, Vec<EventKey>> = Mutex::new(Vec::new());
 
 fn generate_adc_vec<T>(sin: &mut [T], cos: &mut [T], offset: f32, one_angle: f32, mul: f32)
 where
@@ -449,7 +448,7 @@ async fn main(spawner: Spawner) {
         CountingMode::EdgeAlignedUp,
     );
 
-    let mut neo_pixel = NeoPixelPwm::new(neo_pixel_pwm, neo_pixel_pwm_hz);
+    let neo_pixel = NeoPixelPwm::new(neo_pixel_pwm, neo_pixel_pwm_hz);
     static NEO_PIXEL_DMA: StaticCell<peripherals::DMA1_CH0> = StaticCell::new();
     let neo_pixel_dma: &'static mut peripherals::DMA1_CH0 = NEO_PIXEL_DMA.init(p.DMA1_CH0);
 
@@ -473,7 +472,7 @@ async fn main(spawner: Spawner) {
     }
     let mut prev_adc_state = AdcState::OnGround;
 
-    spawner.must_spawn(uart_jetson_rx_task(uart_jetson));
+    spawner.must_spawn(uart_jetson_task(uart_jetson));
     if ssd1306_init_success {
         spawner.must_spawn(ui_task(ui, gpio_ui_up, gpio_ui_down, gpio_ui_enter));
     }
@@ -484,7 +483,7 @@ async fn main(spawner: Spawner) {
     let mut prev_time = Instant::now();
     loop {
         let mut buf = [0u8; 19];
-        uart_bno.read(&mut buf).await.unwrap();
+        let _ = uart_bno.read(&mut buf).await;
         proc.process_slice(&buf).unwrap();
         parser
             .worker(|frame| {
@@ -750,13 +749,13 @@ async fn main(spawner: Spawner) {
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
-        info!("elapsed time: {}", elapsed_time.as_millis());
+        // info!("elapsed time: {}", elapsed_time.as_millis());
         prev_time = now_time;
     }
 }
 
 #[embassy_executor::task]
-async fn uart_jetson_rx_task(mut uart: Uart<'static, mode::Async>) {
+async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
     const RX_DATA_SIZE: usize = 15;
 
     let mut timeout_count = 0;
@@ -793,7 +792,7 @@ async fn uart_jetson_rx_task(mut uart: Uart<'static, mode::Async>) {
                 timeout_count += 1;
 
                 if timeout_count > 10 {
-                    // error!("[UART Jetson] timeout");
+                    error!("[UART Jetson] timeout");
                     G_MSG_RX.lock().await.vel = nv1_msg::hub::Velocity {
                         x: 0.0,
                         y: 0.0,
@@ -820,8 +819,6 @@ async fn uart_jetson_rx_task(mut uart: Uart<'static, mode::Async>) {
                 error!("[UART Jetson] postcard encode error");
             }
         }
-
-        Timer::after_millis(10).await;
     }
 }
 
@@ -874,31 +871,49 @@ async fn neo_pixel_task(
         *c = RGB8 { r: 0, g: 0, b: 0 };
     }
 
+    const LED_COUNT: usize = 32;
+
+    const SPREAD_PATTERN: [usize; 32] = [
+        0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 5, 5, 4, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0,
+        0, 0,
+    ];
+
     let mut prev_index = 0;
     let mut loop_count = 0;
     loop {
-        // neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
-        //     let mut p = 0;
-        //     if loop_count % 32 == i {
-        //         p = 255;
-        //     }
+        neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
+            let mut p = 0;
+            if loop_count % 32 == i {
+                p = 255;
+            }
 
-        //     *c = RGB8 { r: p, g: p, b: p };
-        // });
+            *c = RGB8 { r: p, g: p, b: p };
+        });
 
-        let index = loop_count % 32;
-        neo_pixel_data[prev_index] = RGB8 { r: 0, g: 0, b: 0 };
-        neo_pixel_data[index] = RGB8 {
-            r: 255,
-            g: 255,
-            b: 255,
-        };
-        prev_index = index;
+        let base_index = loop_count % LED_COUNT;
+        let spread = SPREAD_PATTERN[loop_count % 32];
+        for j in 0..3 {
+            let offset = spread * (j as isize - 1) as usize; // 左右に広がる動き
+            let index = (base_index + offset) % LED_COUNT;
+            neo_pixel_data[index] = RGB8 {
+                r: 255,
+                g: 255,
+                b: 255,
+            };
+        }
+        // let index = loop_count % 32;
+        // neo_pixel_data[prev_index] = RGB8 { r: 0, g: 0, b: 0 };
+        // neo_pixel_data[index] = RGB8 {
+        //     r: 255,
+        //     g: 255,
+        //     b: 255,
+        // };
+        // prev_index = index;
 
         neo_pixel.set_colors(dma, &mut neo_pixel_data).await;
 
-        loop_count += 1;
-        // Timer::after(Duration::from_millis(30)).await;
+        loop_count = (loop_count + 1) % LED_COUNT;
+        Timer::after(Duration::from_millis(30)).await;
     }
 }
 
