@@ -1,7 +1,10 @@
+cargo-features = ["per-package-target"]
+
 [package]
 edition = "2021"
 name = "nv1-hub-stm32"
 version = "0.1.0"
+forced-target = "thumbv7em-none-eabi"
 
 [dependencies]
 nv1-hub-ui = { path = "../nv1-hub-ui", features = ["no_std"] }
