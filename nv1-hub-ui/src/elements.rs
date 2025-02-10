@@ -65,7 +65,7 @@ where
         Ok(())
     }
 
-    fn event(&mut self, event: &Event, info: ElementInfo) -> bool {
+    fn event(&mut self, _event: &Event, _info: ElementInfo) -> bool {
         false
     }
 }
@@ -122,7 +122,7 @@ where
         Ok(())
     }
 
-    fn event(&mut self, event: &crate::Event, info: ElementInfo) -> bool {
+    fn event(&mut self, _event: &crate::Event, _info: ElementInfo) -> bool {
         (self.request)(&mut self.value);
         false
     }
@@ -276,7 +276,7 @@ where
         Ok(())
     }
 
-    fn event(&mut self, event: &crate::Event, info: ElementInfo) -> bool {
+    fn event(&mut self, event: &crate::Event, _info: ElementInfo) -> bool {
         match event {
             crate::Event::KeyDown(crate::EventKey::Enter) => {
                 self.entering = !self.entering;
