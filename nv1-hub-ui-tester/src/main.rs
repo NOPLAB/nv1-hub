@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
         sdl2::Keycode, BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent,
         Window,
     };
-    use nv1_hub_ui::elements;
+    use nv1_hub_ui::{elements, menus};
     use nv1_hub_ui::{
         elements::{Button, Element, Text, Value},
         menu::{ListMenu, ListMenuOption, MenuOption},
@@ -80,14 +80,14 @@ fn main() -> anyhow::Result<()> {
         ui_line
     ];
 
-    let menu = vec![Box::new(ListMenu::new(
+    let menu = menus![ListMenu::new(
         elements,
         ListMenuOption {
             vertical_num: 5,
             element_margin: 1,
             cursor_line_len: 4,
         },
-    ))];
+    )];
     let mut ui = HubUI::new(&mut display, menu, ui_option);
 
     let mut ui_event = Event::None;

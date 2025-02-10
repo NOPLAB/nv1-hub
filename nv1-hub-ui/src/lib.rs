@@ -91,3 +91,16 @@ macro_rules! elements {
         }
     };
 }
+
+#[macro_export]
+macro_rules! menus {
+    ($( $x: expr ), *) => {
+        {
+            let mut menus = Vec::new();
+            $(
+                menus.push(Box::new($x));
+            ) *
+            menus
+        }
+    };
+}
