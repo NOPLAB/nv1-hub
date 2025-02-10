@@ -21,10 +21,13 @@ fn main() -> anyhow::Result<()> {
         sdl2::Keycode, BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent,
         Window,
     };
+    use nv1_hub_ui::menu::Menu;
+    use nv1_hub_ui::menu::RobotStatusMenu;
+    use nv1_hub_ui::menu::RobotStatusMenuOption;
     use nv1_hub_ui::{elements, menus};
     use nv1_hub_ui::{
         elements::{Button, Element, Text, Value},
-        menu::{DrawingInfo, ListMenu, ListMenuOption},
+        menu::{ListMenu, ListMenuOption},
         Event, EventKey, HubUI, HubUIOption,
     };
 
@@ -36,12 +39,7 @@ fn main() -> anyhow::Result<()> {
         .build();
     let mut window = Window::new("SSD1306", &output_settings);
 
-    let ui_option = HubUIOption {
-        menu_option: DrawingInfo {
-            position: Point::new(2 + 64, 2),
-            size: Size::new(64 - 4, 64 - 4),
-        },
-    };
+    let ui_option = HubUIOption {};
 
     let ui_text = Text::new("Interface", embedded_graphics::mono_font::ascii::FONT_5X8);
 
@@ -78,14 +76,23 @@ fn main() -> anyhow::Result<()> {
         ui_line
     ];
 
-    let menu = menus![ListMenu::new(
-        elements,
-        ListMenuOption {
-            vertical_num: 5,
-            element_margin: 1,
-            cursor_line_len: 4,
-        },
-    )];
+    let menu = menus![
+        SimulatorDisplay<BinaryColor>,
+        ListMenu::new(
+            elements,
+            ListMenuOption {
+                position: Point::new(64, 0),
+                size: Size::new(64, 64),
+                vertical_num: 5,
+                element_margin: 1,
+                cursor_line_len: 4,
+            },
+        ),
+        RobotStatusMenu::new(RobotStatusMenuOption {
+            position: Point::new(0, 0),
+            size: Size::new(64, 64),
+        })
+    ];
     let mut ui = HubUI::new(&mut display, menu, ui_option);
 
     let mut ui_event = Event::None;

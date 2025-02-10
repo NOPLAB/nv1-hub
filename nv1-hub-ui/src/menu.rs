@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use embedded_graphics::prelude::Primitive;
-use embedded_graphics::primitives::Line;
+use embedded_graphics::primitives::{Circle, Line};
 use embedded_graphics::Drawable;
 use embedded_graphics::{
     pixelcolor::BinaryColor,
@@ -11,21 +11,17 @@ use embedded_graphics::{
 
 use crate::elements::{Element, ElementInfo};
 
-#[derive(Debug, Clone, Copy)]
-pub struct DrawingInfo {
-    pub position: Point,
-    pub size: Size,
-}
-
 pub trait Menu<T>
 where
     T: DrawTarget<Color = BinaryColor>,
 {
-    fn draw(&self, display: &mut T, info: &DrawingInfo) -> Result<(), T::Error>;
-    fn event(&mut self, event: &crate::Event, info: &DrawingInfo);
+    fn draw(&self, display: &mut T) -> Result<(), T::Error>;
+    fn event(&mut self, event: &crate::Event);
 }
 
 pub struct ListMenuOption {
+    pub position: Point,
+    pub size: Size,
     pub vertical_num: usize,
     pub element_margin: usize,
     pub cursor_line_len: i32,
@@ -53,12 +49,12 @@ where
         }
     }
 
-    fn draw_cursor(&self, display: &mut T, info: &DrawingInfo) -> Result<(), T::Error> {
-        let mut position = self.calculate_element_position(info, self.selected_element);
+    fn draw_cursor(&self, display: &mut T) -> Result<(), T::Error> {
+        let mut position = self.calculate_element_position(self.selected_element);
         position.x -= self.option.element_margin as i32;
         position.y -= self.option.element_margin as i32;
 
-        let mut size = self.calculate_element_size(info);
+        let mut size = self.calculate_element_size();
         size.width += self.option.element_margin as u32 * 2;
         size.height += self.option.element_margin as u32 * 2;
 
@@ -141,19 +137,19 @@ where
         Ok(())
     }
 
-    fn calculate_element_position(&self, info: &DrawingInfo, index: usize) -> Point {
-        let height = info.size.height / self.option.vertical_num as u32;
+    fn calculate_element_position(&self, index: usize) -> Point {
+        let height = self.option.size.height / self.option.vertical_num as u32;
 
         Point::new(
-            info.position.x,
-            info.position.y + height as i32 * (index as i32 - self.scroll as i32),
+            self.option.position.x,
+            self.option.position.y + height as i32 * (index as i32 - self.scroll as i32),
         )
     }
 
-    fn calculate_element_size(&self, info: &DrawingInfo) -> Size {
+    fn calculate_element_size(&self) -> Size {
         Size::new(
-            info.size.width - self.option.element_margin as u32 * 2,
-            info.size.height / self.option.vertical_num as u32
+            self.option.size.width - self.option.element_margin as u32 * 2,
+            self.option.size.height / self.option.vertical_num as u32
                 - self.option.element_margin as u32 * 2,
         )
     }
@@ -163,10 +159,10 @@ impl<T> Menu<T> for ListMenu<T>
 where
     T: DrawTarget<Color = BinaryColor>,
 {
-    fn draw(&self, display: &mut T, info: &DrawingInfo) -> Result<(), T::Error> {
+    fn draw(&self, display: &mut T) -> Result<(), T::Error> {
         for (i, element) in self.elements.iter().enumerate() {
-            let position = self.calculate_element_position(info, i);
-            let size = self.calculate_element_size(info);
+            let position = self.calculate_element_position(i);
+            let size = self.calculate_element_size();
 
             let info = ElementInfo {
                 selected: i == self.selected_element,
@@ -176,16 +172,16 @@ where
             element.draw(display, info)?;
         }
 
-        self.draw_cursor(display, info)?;
+        self.draw_cursor(display)?;
         Ok(())
     }
 
-    fn event(&mut self, event: &crate::Event, info: &DrawingInfo) {
+    fn event(&mut self, event: &crate::Event) {
         let positions: Vec<_> = (0..self.elements.len())
-            .map(|i| self.calculate_element_position(info, i))
+            .map(|i| self.calculate_element_position(i))
             .collect();
 
-        let size = self.calculate_element_size(info);
+        let size = self.calculate_element_size();
 
         let mut entering = false;
 
@@ -231,4 +227,41 @@ where
             }
         }
     }
+}
+
+pub struct RobotStatusMenuOption {
+    pub position: Point,
+    pub size: Size,
+}
+
+pub struct RobotStatusMenu {
+    option: RobotStatusMenuOption,
+}
+
+impl RobotStatusMenu {
+    pub fn new(option: RobotStatusMenuOption) -> Self {
+        RobotStatusMenu { option }
+    }
+}
+
+impl<T> Menu<T> for RobotStatusMenu
+where
+    T: DrawTarget<Color = BinaryColor>,
+{
+    fn draw(&self, display: &mut T) -> Result<(), <T as DrawTarget>::Error> {
+        let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+        let max_size = self.option.size.width.min(self.option.size.height);
+
+        Circle::new(
+            Point::new(self.option.position.x, self.option.position.y),
+            max_size,
+        )
+        .into_styled(style)
+        .draw(display)?;
+
+        Ok(())
+    }
+
+    fn event(&mut self, event: &crate::Event) {}
 }

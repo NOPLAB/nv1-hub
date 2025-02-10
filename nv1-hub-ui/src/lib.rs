@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
-use menu::{DrawingInfo, Menu};
+use menu::Menu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKey {
@@ -28,27 +28,23 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct HubUIOption {
-    pub menu_option: DrawingInfo,
-}
+pub struct HubUIOption {}
 
-pub struct HubUI<'a, T, M>
+pub struct HubUI<'a, T>
 where
     T: DrawTarget<Color = BinaryColor>,
-    M: Menu<T>,
 {
     option: HubUIOption,
     display: &'a mut T,
-    menu: Vec<Box<M>>,
+    menu: Vec<Box<dyn Menu<T>>>,
 }
 
-impl<'a, T, M> HubUI<'a, T, M>
+impl<'a, T> HubUI<'a, T>
 where
     T: DrawTarget<Color = BinaryColor>,
     <T as DrawTarget>::Error: Debug,
-    M: Menu<T>,
 {
-    pub fn new(display: &'a mut T, menu: Vec<Box<M>>, option: HubUIOption) -> Self {
+    pub fn new(display: &'a mut T, menu: Vec<Box<dyn Menu<T>>>, option: HubUIOption) -> Self {
         HubUI {
             option,
             display,
@@ -66,7 +62,7 @@ where
         self.display.clear(BinaryColor::Off).unwrap();
 
         for m in self.menu.iter() {
-            m.draw(self.display, &self.option.menu_option).unwrap();
+            m.draw(self.display).unwrap();
         }
 
         return self.display;
@@ -74,7 +70,7 @@ where
 
     fn event(&mut self, event: &Event) {
         for m in self.menu.iter_mut() {
-            m.event(event, &self.option.menu_option);
+            m.event(event);
         }
     }
 }
@@ -94,9 +90,9 @@ macro_rules! elements {
 
 #[macro_export]
 macro_rules! menus {
-    ($( $x: expr ), *) => {
+    ($t: ty, $( $x: expr ), *) => {
         {
-            let mut menus = Vec::new();
+            let mut menus: Vec<Box<dyn Menu<$t>>> = Vec::new();
             $(
                 menus.push(Box::new($x));
             ) *
