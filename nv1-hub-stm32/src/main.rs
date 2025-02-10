@@ -47,7 +47,7 @@ use libm::{cosf, powf, sinf, sqrtf};
 use neo_pixel::NeoPixelPwm;
 use num_traits::{AsPrimitive, Num};
 use nv1_hub_ui::elements::{Element, Slider, Text, Value};
-use nv1_hub_ui::menu::MenuOption;
+use nv1_hub_ui::menu::DrawingInfo;
 use nv1_hub_ui::{
     elements::Button,
     menu::{ListMenu, ListMenuOption},
@@ -299,7 +299,7 @@ async fn main(spawner: Spawner) {
     };
 
     let ui_option = HubUIOption {
-        menu_option: MenuOption {
+        menu_option: DrawingInfo {
             position: Point::new(2 + 64, 2),
             size: Size::new(64 - 4, 64 - 4),
         },

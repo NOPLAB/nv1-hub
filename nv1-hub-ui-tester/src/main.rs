@@ -16,8 +16,6 @@ static G_REBOOT: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
 
 #[cfg(not(feature = "no_std"))]
 fn main() -> anyhow::Result<()> {
-    use std::vec;
-
     use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
     use embedded_graphics_simulator::{
         sdl2::Keycode, BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent,
@@ -26,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     use nv1_hub_ui::{elements, menus};
     use nv1_hub_ui::{
         elements::{Button, Element, Text, Value},
-        menu::{ListMenu, ListMenuOption, MenuOption},
+        menu::{DrawingInfo, ListMenu, ListMenuOption},
         Event, EventKey, HubUI, HubUIOption,
     };
 
@@ -39,7 +37,7 @@ fn main() -> anyhow::Result<()> {
     let mut window = Window::new("SSD1306", &output_settings);
 
     let ui_option = HubUIOption {
-        menu_option: MenuOption {
+        menu_option: DrawingInfo {
             position: Point::new(2 + 64, 2),
             size: Size::new(64 - 4, 64 - 4),
         },

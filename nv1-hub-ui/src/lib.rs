@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
-use menu::{Menu, MenuOption};
+use menu::{DrawingInfo, Menu};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKey {
@@ -29,7 +29,7 @@ pub enum Event {
 
 #[derive(Debug, Clone, Copy)]
 pub struct HubUIOption {
-    pub menu_option: MenuOption,
+    pub menu_option: DrawingInfo,
 }
 
 pub struct HubUI<'a, T, M>

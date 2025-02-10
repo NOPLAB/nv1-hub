@@ -12,7 +12,7 @@ use embedded_graphics::{
 use crate::elements::{Element, ElementInfo};
 
 #[derive(Debug, Clone, Copy)]
-pub struct MenuOption {
+pub struct DrawingInfo {
     pub position: Point,
     pub size: Size,
 }
@@ -21,8 +21,8 @@ pub trait Menu<T>
 where
     T: DrawTarget<Color = BinaryColor>,
 {
-    fn draw(&self, display: &mut T, info: &MenuOption) -> Result<(), T::Error>;
-    fn event(&mut self, event: &crate::Event, info: &MenuOption);
+    fn draw(&self, display: &mut T, info: &DrawingInfo) -> Result<(), T::Error>;
+    fn event(&mut self, event: &crate::Event, info: &DrawingInfo);
 }
 
 pub struct ListMenuOption {
@@ -53,7 +53,7 @@ where
         }
     }
 
-    fn draw_cursor(&self, display: &mut T, info: &MenuOption) -> Result<(), T::Error> {
+    fn draw_cursor(&self, display: &mut T, info: &DrawingInfo) -> Result<(), T::Error> {
         let mut position = self.calculate_element_position(info, self.selected_element);
         position.x -= self.option.element_margin as i32;
         position.y -= self.option.element_margin as i32;
@@ -141,7 +141,7 @@ where
         Ok(())
     }
 
-    fn calculate_element_position(&self, info: &MenuOption, index: usize) -> Point {
+    fn calculate_element_position(&self, info: &DrawingInfo, index: usize) -> Point {
         let height = info.size.height / self.option.vertical_num as u32;
 
         Point::new(
@@ -150,7 +150,7 @@ where
         )
     }
 
-    fn calculate_element_size(&self, info: &MenuOption) -> Size {
+    fn calculate_element_size(&self, info: &DrawingInfo) -> Size {
         Size::new(
             info.size.width - self.option.element_margin as u32 * 2,
             info.size.height / self.option.vertical_num as u32
@@ -163,7 +163,7 @@ impl<T> Menu<T> for ListMenu<T>
 where
     T: DrawTarget<Color = BinaryColor>,
 {
-    fn draw(&self, display: &mut T, info: &MenuOption) -> Result<(), T::Error> {
+    fn draw(&self, display: &mut T, info: &DrawingInfo) -> Result<(), T::Error> {
         for (i, element) in self.elements.iter().enumerate() {
             let position = self.calculate_element_position(info, i);
             let size = self.calculate_element_size(info);
@@ -180,7 +180,7 @@ where
         Ok(())
     }
 
-    fn event(&mut self, event: &crate::Event, info: &MenuOption) {
+    fn event(&mut self, event: &crate::Event, info: &DrawingInfo) {
         let positions: Vec<_> = (0..self.elements.len())
             .map(|i| self.calculate_element_position(info, i))
             .collect();
