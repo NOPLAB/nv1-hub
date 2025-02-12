@@ -193,10 +193,8 @@ where
                 size,
             };
 
-            let result = element.event(event, info);
-
             if i == self.selected_element {
-                entering = result;
+                entering = element.event(event, info);
             }
         }
 
