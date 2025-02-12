@@ -300,10 +300,9 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let ui_text = Text::new("Interface", embedded_graphics::mono_font::ascii::FONT_6X10);
+    let ui_text = Text::new("INTERFACE", embedded_graphics::mono_font::ascii::FONT_6X10);
 
     let shutdown = Rc::new(RefCell::new(false));
-
     let shutdown_clone = shutdown.clone();
     let ui_shutdown = Button::new(
         "Shutdown",
@@ -314,7 +313,6 @@ async fn main(spawner: Spawner) {
     );
 
     let reboot = Rc::new(RefCell::new(false));
-
     let reboot_clone = reboot.clone();
     let ui_reboot = Button::new(
         "Reboot",
@@ -325,7 +323,6 @@ async fn main(spawner: Spawner) {
     );
 
     let line_value = Rc::new(RefCell::new(0.0));
-
     let line_value_clone = line_value.clone();
     let ui_line_value = Value::new(
         "L",
@@ -604,6 +601,9 @@ async fn main(spawner: Spawner) {
                 }
             }
         };
+
+        let adc_line_max = adc_line.into_iter().reduce(f32::max).unwrap_or(0.);
+        line_value.replace(adc_line_max);
 
         adc_ir.iter_mut().for_each(|x| *x = 4096 - *x);
         let adc_ir = adc_ir
