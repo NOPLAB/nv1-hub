@@ -20,6 +20,7 @@ use core::{borrow::Borrow, cell::RefCell};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, vec};
+
 use bbqueue::BBBuffer;
 use defmt::error;
 use embassy_executor::Spawner;
@@ -56,7 +57,6 @@ use nv1_hub_ui::{
 };
 use nv1_hub_ui::{menus, EventKey, HubUIOption};
 use nv1_msg::hub::HubMsgPackTx;
-
 use rgb::RGB8;
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::prelude::I2CInterface;
@@ -701,8 +701,6 @@ async fn main(spawner: Spawner) {
                 error!("[UART MD] write error: {:?}", err);
             }
         };
-
-        // let adc_have_ball = adc.blocking_read(&mut p.PC3);
 
         // send data to Jetson
         let msg_tx = HubMsgPackTx {
