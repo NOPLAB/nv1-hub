@@ -89,8 +89,8 @@ fn main() -> anyhow::Result<()> {
             },
         ),
         RobotStatusMenu::new(RobotStatusMenuOption {
-            position: Point::new(0, 0),
-            size: Size::new(64, 64),
+            position: Point::new(8, 8),
+            size: Size::new(48, 48),
         })
     ];
     let mut ui = HubUI::new(&mut display, menu, ui_option);

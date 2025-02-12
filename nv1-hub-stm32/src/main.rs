@@ -47,13 +47,13 @@ use libm::{cosf, powf, sinf, sqrtf};
 use neo_pixel::NeoPixelPwm;
 use num_traits::{AsPrimitive, Num};
 use nv1_hub_ui::elements::{Element, Slider, Text, Value};
-use nv1_hub_ui::menu::DrawingInfo;
+use nv1_hub_ui::menu::Menu;
 use nv1_hub_ui::{
     elements::Button,
     menu::{ListMenu, ListMenuOption},
     Event, HubUI,
 };
-use nv1_hub_ui::{EventKey, HubUIOption};
+use nv1_hub_ui::{menus, EventKey, HubUIOption};
 use nv1_msg::hub::HubMsgPackTx;
 
 use rgb::RGB8;
@@ -298,13 +298,6 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let ui_option = HubUIOption {
-        menu_option: DrawingInfo {
-            position: Point::new(2 + 64, 2),
-            size: Size::new(64 - 4, 64 - 4),
-        },
-    };
-
     let ui_text = Text::new("Interface", embedded_graphics::mono_font::ascii::FONT_6X10);
 
     let shutdown = Rc::new(RefCell::new(false));
@@ -386,14 +379,26 @@ async fn main(spawner: Spawner) {
         Box::new(ui_line_strength),
         Box::new(ui_settings_reset),
     ];
-    let menu = vec![Box::new(ListMenu::new(
-        elements,
-        ListMenuOption {
-            vertical_num: 4,
-            element_margin: 1,
-            cursor_line_len: 4,
-        },
-    ))];
+    let menu = menus![
+        Ssd1306<
+            I2CInterface<I2c<mode::Blocking>>,
+            DisplaySize128x64,
+            BufferedGraphicsMode<DisplaySize128x64>,
+        >,
+        ListMenu::new(
+            elements,
+            ListMenuOption {
+                position: Point::new(64, 0),
+                size: Size::new(64, 64),
+                vertical_num: 4,
+                element_margin: 1,
+                cursor_line_len: 4,
+            },
+        )
+    ];
+
+    let ui_option = HubUIOption {};
+
     let mut ui = HubUI::new(ssd1306, menu, ui_option);
     let display = ui.update(&Event::None);
     if ssd1306_init_success {
@@ -805,13 +810,6 @@ async fn ui_task(
             I2CInterface<I2c<'static, mode::Blocking>>,
             DisplaySize128x64,
             BufferedGraphicsMode<DisplaySize128x64>,
-        >,
-        ListMenu<
-            Ssd1306<
-                I2CInterface<I2c<'static, mode::Blocking>>,
-                DisplaySize128x64,
-                BufferedGraphicsMode<DisplaySize128x64>,
-            >,
         >,
     >,
     mut gpio_ui_up: ExtiInput<'static>,
