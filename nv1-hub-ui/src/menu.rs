@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use embedded_graphics::prelude::Primitive;
-use embedded_graphics::primitives::{Circle, Line};
+use embedded_graphics::primitives::{Circle, CornerRadii, Line, RoundedRectangle};
 use embedded_graphics::Drawable;
 use embedded_graphics::{
     pixelcolor::BinaryColor,
@@ -249,16 +249,68 @@ where
     T: DrawTarget<Color = BinaryColor>,
 {
     fn draw(&self, display: &mut T) -> Result<(), <T as DrawTarget>::Error> {
-        let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-
         let max_size = self.option.size.width.min(self.option.size.height);
 
-        Circle::new(
+        let circle_style = PrimitiveStyle::with_stroke(BinaryColor::On, 2);
+        let circle = Circle::new(
             Point::new(self.option.position.x, self.option.position.y),
             max_size,
-        )
-        .into_styled(style)
-        .draw(display)?;
+        );
+        circle.into_styled(circle_style).draw(display)?;
+        let circle_center = circle.center();
+
+        let wheel_position_radius = max_size / 2 - 8;
+        let wheel_position_size_offset = 8;
+
+        let wheel_style = PrimitiveStyle::with_stroke(BinaryColor::On, 8);
+
+        let w_top_left_start = Point::new(
+            circle_center.x - wheel_position_radius as i32 - wheel_position_size_offset as i32,
+            circle_center.y - wheel_position_radius as i32 + wheel_position_size_offset as i32,
+        );
+        let w_top_left_end = Point::new(
+            circle_center.x - wheel_position_radius as i32 + wheel_position_size_offset as i32,
+            circle_center.y - wheel_position_radius as i32 - wheel_position_size_offset as i32,
+        );
+        Line::new(w_top_left_start, w_top_left_end)
+            .into_styled(wheel_style)
+            .draw(display)?;
+
+        let w_top_right_start = Point::new(
+            circle_center.x + wheel_position_radius as i32 - wheel_position_size_offset as i32,
+            circle_center.y - wheel_position_radius as i32 - wheel_position_size_offset as i32,
+        );
+        let w_top_right_end = Point::new(
+            circle_center.x + wheel_position_radius as i32 + wheel_position_size_offset as i32,
+            circle_center.y - wheel_position_radius as i32 + wheel_position_size_offset as i32,
+        );
+        Line::new(w_top_right_start, w_top_right_end)
+            .into_styled(wheel_style)
+            .draw(display)?;
+
+        let w_bottom_left_start = Point::new(
+            circle_center.x - wheel_position_radius as i32 - wheel_position_size_offset as i32,
+            circle_center.y + wheel_position_radius as i32 - wheel_position_size_offset as i32,
+        );
+        let w_bottom_left_end = Point::new(
+            circle_center.x - wheel_position_radius as i32 + wheel_position_size_offset as i32,
+            circle_center.y + wheel_position_radius as i32 + wheel_position_size_offset as i32,
+        );
+        Line::new(w_bottom_left_start, w_bottom_left_end)
+            .into_styled(wheel_style)
+            .draw(display)?;
+
+        let w_bottom_right_start = Point::new(
+            circle_center.x + wheel_position_radius as i32 - wheel_position_size_offset as i32,
+            circle_center.y + wheel_position_radius as i32 + wheel_position_size_offset as i32,
+        );
+        let w_bottom_right_end = Point::new(
+            circle_center.x + wheel_position_radius as i32 + wheel_position_size_offset as i32,
+            circle_center.y + wheel_position_radius as i32 - wheel_position_size_offset as i32,
+        );
+        Line::new(w_bottom_right_start, w_bottom_right_end)
+            .into_styled(wheel_style)
+            .draw(display)?;
 
         Ok(())
     }
