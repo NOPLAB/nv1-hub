@@ -14,6 +14,7 @@ extern crate alloc;
 static HEAP: Heap = Heap::empty();
 
 use core::f32::consts::PI;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{borrow::Borrow, cell::RefCell};
 
 use alloc::rc::Rc;
@@ -110,6 +111,7 @@ static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::HubMsgPackTx>> 
         },
         have_ball: false,
     }));
+static G_JETSON_CONNECTING: AtomicBool = AtomicBool::new(false);
 
 fn generate_adc_vec<T>(sin: &mut [T], cos: &mut [T], offset: f32, one_angle: f32, mul: f32)
 where
@@ -743,7 +745,7 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
     loop {
         let mut msg_with_cobs = [0u8; RX_DATA_SIZE];
         let timeout_res =
-            with_timeout(Duration::from_millis(5), uart.read(&mut msg_with_cobs)).await;
+            with_timeout(Duration::from_millis(10), uart.read(&mut msg_with_cobs)).await;
         match timeout_res {
             Ok(rx) => match rx {
                 Ok(_) => {
@@ -757,6 +759,8 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
                             // info!("Angular Z: {}", msg.vel.angle);
 
                             G_MSG_RX.lock().await.vel = msg.vel;
+
+                            G_JETSON_CONNECTING.store(true, Ordering::Relaxed);
                         }
                         Err(_) => {
                             error!("[UART Jetson] postcard decode error");
@@ -771,13 +775,17 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
             Err(_) => {
                 timeout_count += 1;
 
-                if timeout_count > 10 {
+                if timeout_count > 5 {
                     error!("[UART Jetson] timeout");
+
                     G_MSG_RX.lock().await.vel = nv1_msg::hub::Velocity {
                         x: 0.0,
                         y: 0.0,
                         angle: 0.0,
                     };
+
+                    G_JETSON_CONNECTING.store(false, Ordering::Relaxed);
+
                     timeout_count = 0;
                 }
             }
@@ -858,37 +866,21 @@ async fn neo_pixel_task(
         0, 0,
     ];
 
-    let mut prev_index = 0;
     let mut loop_count = 0;
     loop {
-        neo_pixel_data.iter_mut().enumerate().for_each(|(i, c)| {
-            let mut p = 0;
-            if loop_count % 32 == i {
-                p = 255;
-            }
-
-            *c = RGB8 { r: p, g: p, b: p };
-        });
+        let color = if G_JETSON_CONNECTING.load(Ordering::Relaxed) {
+            RGB8 { r: 0, g: 255, b: 0 }
+        } else {
+            RGB8 { r: 255, g: 0, b: 0 }
+        };
 
         let base_index = loop_count % LED_COUNT;
         let spread = SPREAD_PATTERN[loop_count % 32];
         for j in 0..3 {
             let offset = spread * (j as isize - 1) as usize; // 左右に広がる動き
             let index = (base_index + offset) % LED_COUNT;
-            neo_pixel_data[index] = RGB8 {
-                r: 255,
-                g: 255,
-                b: 255,
-            };
+            neo_pixel_data[index] = color;
         }
-        // let index = loop_count % 32;
-        // neo_pixel_data[prev_index] = RGB8 { r: 0, g: 0, b: 0 };
-        // neo_pixel_data[index] = RGB8 {
-        //     r: 255,
-        //     g: 255,
-        //     b: 255,
-        // };
-        // prev_index = index;
 
         neo_pixel.set_colors(dma, &mut neo_pixel_data).await;
 
