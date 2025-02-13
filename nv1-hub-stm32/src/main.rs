@@ -10,6 +10,8 @@ mod omni;
 
 extern crate alloc;
 
+use embedded_alloc::LlffHeap as Heap;
+
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
@@ -42,13 +44,14 @@ use embassy_stm32::{
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
-use embedded_alloc::LlffHeap as Heap;
 use embedded_graphics::prelude::{Point, Size};
 use fmt::info;
 use libm::{cosf, powf, sinf, sqrtf};
 use neo_pixel::NeoPixelPwm;
 use num_traits::{AsPrimitive, Num};
-use nv1_hub_ui::elements::{Element, Slider, Text, Value};
+use nv1_hub_ui::elements;
+use nv1_hub_ui::elements::Element;
+use nv1_hub_ui::elements::{Slider, Text, Value};
 use nv1_hub_ui::menu::Menu;
 use nv1_hub_ui::{
     elements::Button,
@@ -259,6 +262,7 @@ async fn main(spawner: Spawner) {
 
     info!("line strength: {}", settings.borrow_mut().line_strength);
 
+    // UI
     let gpio_ui_toggle = ExtiInput::new(p.PC12, p.EXTI12, Pull::None);
     let gpio_ui_up = ExtiInput::new(p.PC13, p.EXTI13, Pull::None);
     let gpio_ui_down = ExtiInput::new(p.PC14, p.EXTI14, Pull::None);
@@ -300,6 +304,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
+    // UI view
     let ui_text = Text::new("INTERFACE", embedded_graphics::mono_font::ascii::FONT_6X10);
 
     let shutdown = Rc::new(RefCell::new(false));
@@ -360,23 +365,18 @@ async fn main(spawner: Spawner) {
         embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
-    let elements: Vec<
-        Box<
-            dyn Element<
-                Ssd1306<
-                    I2CInterface<I2c<mode::Blocking>>,
-                    DisplaySize128x64,
-                    BufferedGraphicsMode<DisplaySize128x64>,
-                >,
-            >,
+    let elements = elements![
+        Ssd1306<
+            I2CInterface<I2c<mode::Blocking>>,
+            DisplaySize128x64,
+            BufferedGraphicsMode<DisplaySize128x64>,
         >,
-    > = vec![
-        Box::new(ui_text),
-        Box::new(ui_shutdown),
-        Box::new(ui_reboot),
-        Box::new(ui_line_value),
-        Box::new(ui_line_strength),
-        Box::new(ui_settings_reset),
+        ui_text,
+        ui_shutdown,
+        ui_reboot,
+        ui_line_value,
+        ui_line_strength,
+        ui_settings_reset
     ];
     let menu = menus![
         Ssd1306<
