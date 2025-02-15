@@ -14,6 +14,6 @@ defeault = ["no_std"]
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 embedded-graphics = "0.8.1"
 nv1-hub-ui = { path = "../nv1-hub-ui" }
-embedded-graphics-simulator = "0.6.0"
+embedded-graphics-simulator = "0.7.0"
 sdl2 = { version = "^0.35.2", features = ["bundled"] }
 anyhow = "1.0.86"
