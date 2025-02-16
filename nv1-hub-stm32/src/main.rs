@@ -19,9 +19,9 @@ use core::f32::consts::PI;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{borrow::Borrow, cell::RefCell};
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use alloc::{boxed::Box, vec};
 
 use bbqueue::BBBuffer;
 use defmt::error;
@@ -46,7 +46,6 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use embedded_graphics::prelude::{Point, Size};
 use fmt::info;
-use libm::{cosf, powf, sinf, sqrtf};
 use neo_pixel::NeoPixelPwm;
 use num_traits::{AsPrimitive, Num};
 use nv1_hub_ui::elements;
@@ -71,6 +70,9 @@ use static_cell::StaticCell;
 
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
+
+const IR_ANGLE_THRESHOLD: f32 = 60_f32.to_radians();
+const IR_COUNT_THRESHOLD: f32 = 0.02;
 
 bind_interrupts!(struct Irqs {
     USART3 => usart::InterruptHandler<peripherals::USART3>;
@@ -122,8 +124,8 @@ where
     T: Num + Copy + 'static,
 {
     for i in 0..sin.len() {
-        sin[i] = (sinf(i as f32 * one_angle + offset) * mul).as_();
-        cos[i] = (cosf(i as f32 * one_angle + offset) * mul).as_();
+        sin[i] = (libm::sinf(i as f32 * one_angle + offset) * mul).as_();
+        cos[i] = (libm::cosf(i as f32 * one_angle + offset) * mul).as_();
     }
 }
 
@@ -144,7 +146,9 @@ where
         sum_y = sum_y + (adc_sin[i] * adc[i]).as_();
     }
 
-    let norm = sqrtf(powf(sum_x / adc.len() as f32, 2.0) + powf(sum_y / adc.len() as f32, 2.0));
+    let norm = libm::sqrtf(
+        libm::powf(sum_x / adc.len() as f32, 2.0) + libm::powf(sum_y / adc.len() as f32, 2.0),
+    );
 
     (
         sum_x / adc.len() as f32 / norm,
@@ -227,23 +231,25 @@ async fn main(spawner: Spawner) {
     let mut ir_s2 = Output::new(p.PB4, Level::Low, embassy_stm32::gpio::Speed::High);
     let mut ir_s3 = Output::new(p.PB5, Level::Low, embassy_stm32::gpio::Speed::High);
 
-    let mut adc_line_sin = [0.0f32; 32];
-    let mut adc_line_cos = [0.0f32; 32];
+    let mut adc_line_sin = [0.0_f32; 32];
+    let mut adc_line_cos = [0.0_f32; 32];
     generate_adc_vec(
         &mut adc_line_sin,
         &mut adc_line_cos,
-        (90 as f32).to_radians(),
-        -((360.0 / 32.0) as f32).to_radians(),
+        90.0_f32.to_radians(),
+        -(360.0_f32 / 32.0_f32).to_radians(),
         1.0,
     );
+    info!("adc_line_sin: {:?}", adc_line_sin);
+    info!("adc_line_cos: {:?}", adc_line_cos);
 
-    let mut adc_ir_sin = [0.0f32; 16];
-    let mut adc_ir_cos = [0.0f32; 16];
+    let mut adc_ir_sin = [0.0_f32; 16];
+    let mut adc_ir_cos = [0.0_f32; 16];
     generate_adc_vec(
         &mut adc_ir_sin,
         &mut adc_ir_cos,
-        (90 as f32).to_radians(),
-        -((360.0 / 16.0) as f32).to_radians(),
+        90_f32.to_radians(),
+        -(360.0_f32 / 16.0_f32).to_radians(),
         1.0,
     );
 
@@ -613,17 +619,17 @@ async fn main(spawner: Spawner) {
 
         let (ir_x, ir_y, _ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
 
-        let adc_ir_over_count = adc_ir.iter().filter(|x| **x > 0.05).count();
+        let adc_ir_over_count = adc_ir.iter().filter(|x| **x > IR_COUNT_THRESHOLD).count();
         // info!("IR over count: {}", adc_ir_over_count);
 
         let ir_angle = libm::atan2f(ir_y, ir_x);
         // info!("IR angle: {}", ir_angle);
 
-        const IR_ANGLE_THRESHOLD: f32 = 0.3;
-        let ir_vel = if adc_ir_over_count > 13
+        let ir_vel = if adc_ir_over_count > 10
             && ir_angle > PI / 2.0 - IR_ANGLE_THRESHOLD
             && ir_angle < PI / 2.0 + IR_ANGLE_THRESHOLD
         {
+            info!("[IR] Assist Mode");
             Some((ir_x * 0.8, 0.4))
         } else {
             None
@@ -722,7 +728,7 @@ async fn main(spawner: Spawner) {
                 y: line_vel_y,
                 strength: 0.0,
             },
-            have_ball: adc_have_ball < 2048,
+            have_ball: adc_have_ball < 800,
         };
 
         G_MSG_TX.lock().await.replace(msg_tx);
