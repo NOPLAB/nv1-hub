@@ -73,6 +73,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 const IR_ANGLE_THRESHOLD: f32 = 60_f32.to_radians();
 const IR_COUNT_THRESHOLD: f32 = 0.02;
+const LINE_OVER_CENTER_THRESHOLD: f32 = 120_f32.to_radians();
 
 bind_interrupts!(struct Irqs {
     USART3 => usart::InterruptHandler<peripherals::USART3>;
@@ -453,7 +454,7 @@ async fn main(spawner: Spawner) {
     enum AdcState {
         OnGround,
         OnLine(f32, f32, f32),
-        OutOfLineWithCenter(f32, f32, f32, u32),
+        OutOfLineOverCenter(f32, f32, f32, u32),
     }
     let mut prev_adc_state = AdcState::OnGround;
 
@@ -539,65 +540,77 @@ async fn main(spawner: Spawner) {
         let line_vel: Option<(f32, f32)> = match prev_adc_state {
             AdcState::OnGround => {
                 if line_strength > settings.borrow_mut().line_strength {
-                    let angle = libm::atan2f(line_vel_y, line_vel_x);
-                    let angle = if angle < 0.0 { 2.0 * PI + angle } else { angle };
-
-                    prev_adc_state = AdcState::OnLine(angle, line_vel_x, line_vel_y);
+                    // prev: on Ground, now: on Line
                     info!("[LINE] Line detected");
+
+                    let now_angle = libm::atan2f(line_vel_y, line_vel_x);
+                    let now_angle = if now_angle < 0.0 {
+                        2.0 * PI + now_angle
+                    } else {
+                        now_angle
+                    };
+
+                    prev_adc_state = AdcState::OnLine(now_angle, line_vel_x, line_vel_y);
                     Some((-line_vel_x, -line_vel_y))
                 } else {
+                    // prev: on Ground, now: on Ground
                     prev_adc_state = AdcState::OnGround;
                     None
                 }
             }
             AdcState::OnLine(old_angle, old_line_x, old_line_y) => {
                 if line_strength < settings.borrow_mut().line_strength {
+                    // prev: on Line, now: on Ground
                     prev_adc_state = AdcState::OnGround;
                     None
                 } else {
-                    let new_angle = libm::atan2f(line_vel_y, line_vel_x); // -3.14 ~ 3.14
-                    let new_angle = if new_angle < 0.0 {
-                        2.0 * PI + new_angle
+                    // prev: on Line, now: on Line
+                    let now_angle = libm::atan2f(line_vel_y, line_vel_x); // -3.14 ~ 3.14
+                    let now_angle = if now_angle < 0.0 {
+                        2.0 * PI + now_angle
                     } else {
-                        new_angle
+                        now_angle
                     };
 
-                    if libm::fabsf(old_angle - new_angle) > 2.0 * PI / 4.0 {
+                    if libm::fabsf(old_angle - now_angle) > LINE_OVER_CENTER_THRESHOLD {
+                        // prev: on Line, now: out of Center
+
                         prev_adc_state =
-                            AdcState::OutOfLineWithCenter(old_angle, old_line_x, old_line_y, 0);
+                            AdcState::OutOfLineOverCenter(old_angle, old_line_x, old_line_y, 0);
                         info!(
-                            "Out of line new_angle: {}, prev_angle: {}",
-                            new_angle, old_angle
+                            "[LINE] Out of line new_angle: {}, prev_angle: {}",
+                            now_angle, old_angle
                         );
                         Some((-line_vel_x, -line_vel_y))
                     } else {
+                        // prev: on Line, now: on Line
                         prev_adc_state = AdcState::OnLine(old_angle, old_line_x, old_line_y);
-                        // info!(
-                        //     "On line new_angle: {}, prev_angle: {}",
-                        //     new_angle, old_angle
-                        // );
+
                         Some((-line_vel_x, -line_vel_y))
                     }
                 }
             }
-            AdcState::OutOfLineWithCenter(old_angle, old_line_x, old_line_y, counter) => {
-                let new_angle = libm::atan2f(line_vel_y, line_vel_x);
-                let new_angle = if new_angle < 0.0 {
-                    2.0 * PI + new_angle
+            AdcState::OutOfLineOverCenter(old_angle, old_line_x, old_line_y, counter) => {
+                let now_angle = libm::atan2f(line_vel_y, line_vel_x);
+                let now_angle = if now_angle < 0.0 {
+                    2.0 * PI + now_angle
                 } else {
-                    new_angle
+                    now_angle
                 };
 
                 if line_strength > settings.borrow_mut().line_strength
-                    && libm::fabsf(old_angle - new_angle) < 2.0 * PI / 4.0
+                    && libm::fabsf(old_angle - now_angle) < LINE_OVER_CENTER_THRESHOLD
                 {
-                    prev_adc_state = AdcState::OnLine(new_angle, line_vel_x, line_vel_y);
+                    prev_adc_state = AdcState::OnLine(now_angle, line_vel_x, line_vel_y);
                     Some((-line_vel_x, -line_vel_y))
                 } else if counter > 100 {
-                    // prev_adc_state = AdcState::EmergencyStop;
+                    // emergency!!
+
+                    info!("[LINE] Emergency!!");
+                    prev_adc_state = AdcState::OnGround;
                     None
                 } else {
-                    prev_adc_state = AdcState::OutOfLineWithCenter(
+                    prev_adc_state = AdcState::OutOfLineOverCenter(
                         old_angle,
                         old_line_x,
                         old_line_y,
@@ -629,7 +642,6 @@ async fn main(spawner: Spawner) {
             && ir_angle > PI / 2.0 - IR_ANGLE_THRESHOLD
             && ir_angle < PI / 2.0 + IR_ANGLE_THRESHOLD
         {
-            info!("[IR] Assist Mode");
             Some((ir_x * 0.8, 0.4))
         } else {
             None
@@ -848,8 +860,6 @@ async fn ui_task(
 
         let display = ui.update(&event);
         display.flush().unwrap();
-
-        info!("UI event");
     }
 }
 
