@@ -641,21 +641,14 @@ async fn main(spawner: Spawner) {
         let ir_angle = libm::atan2f(ir_y, ir_x);
         // info!("IR angle: {}", ir_angle);
 
-        let ir_vel = if adc_ir_over_count > 10
-            && ir_angle > PI / 2.0 - IR_ANGLE_THRESHOLD
-            && ir_angle < PI / 2.0 + IR_ANGLE_THRESHOLD
-        {
-            Some((ir_x * 0.8, 0.4))
-        } else {
-            None
-        };
-
-        // info!(
-        //     "angle: {}, IR X: {}, IR Y: {}",
-        //     libm::atan2f(ir_y, ir_x),
-        //     ir_x,
-        //     ir_y
-        // );
+        // let ir_vel = if adc_ir_over_count > 10
+        //     && ir_angle > PI / 2.0 - IR_ANGLE_THRESHOLD
+        //     && ir_angle < PI / 2.0 + IR_ANGLE_THRESHOLD
+        // {
+        //     Some((ir_x * 0.8, 0.4))
+        // } else {
+        //     None
+        // };
 
         // info!("line_strength: {}", line_strength);
         // info!("line_strength: {}", settings.borrow_mut().line_strength);
@@ -669,10 +662,6 @@ async fn main(spawner: Spawner) {
             info!("[LINE] Line detected");
             vel_x = line_vel_x * 2.0;
             vel_y = line_vel_y * 2.0;
-        } else if let Some((ir_x, ir_y)) = ir_vel {
-            info!("[IR] Assist Mode");
-            vel_x = ir_x;
-            vel_y = ir_y;
         } else {
             vel_x = msg.vel.x * 1.5;
             vel_y = msg.vel.y * 1.5;
@@ -752,7 +741,7 @@ async fn main(spawner: Spawner) {
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
-        // info!("elapsed time: {}", elapsed_time.as_millis());
+        info!("elapsed time: {}", elapsed_time.as_millis());
         prev_time = now_time;
     }
 }
