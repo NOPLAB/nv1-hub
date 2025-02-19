@@ -16,7 +16,6 @@ use embedded_alloc::LlffHeap as Heap;
 static HEAP: Heap = Heap::empty();
 
 use core::f32::consts::PI;
-use core::sync::atomic::{AtomicBool, Ordering};
 use core::{borrow::Borrow, cell::RefCell};
 
 use alloc::boxed::Box;
@@ -71,7 +70,7 @@ use static_cell::StaticCell;
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
-const IR_ANGLE_THRESHOLD: f32 = 60_f32.to_radians();
+const IR_ANGLE_THRESHOLD: f32 = 90_f32.to_radians() / 2.0;
 const IR_COUNT_THRESHOLD: f32 = 0.02;
 const LINE_OVER_CENTER_THRESHOLD: f32 = 120_f32.to_radians();
 
@@ -117,7 +116,11 @@ static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::HubMsgPackTx>> 
         },
         have_ball: false,
     }));
-static G_JETSON_CONNECTING: AtomicBool = AtomicBool::new(false);
+static G_NEO_PIXEL_DATA: Mutex<ThreadModeRawMutex, NeoPixelData> = Mutex::new(NeoPixelData {
+    jetson_connecting: false,
+    pause: false,
+    ball_dir: 0.0,
+});
 
 fn generate_adc_vec<T>(sin: &mut [T], cos: &mut [T], offset: f32, one_angle: f32, mul: f32)
 where
@@ -442,7 +445,7 @@ async fn main(spawner: Spawner) {
     let mut yaw = 0.0;
 
     let mut rotation_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
-    rotation_pid.p(7.0, 100.0);
+    rotation_pid.p(8.0, 100.0);
 
     const WHEEL_R: f32 = 25.0 / 1000.0;
     const THREAD: f32 = 108.0 / 1000.0;
@@ -671,8 +674,8 @@ async fn main(spawner: Spawner) {
             vel_x = ir_x;
             vel_y = ir_y;
         } else {
-            vel_x = msg.vel.x * 0.9;
-            vel_y = msg.vel.y * 0.9;
+            vel_x = msg.vel.x * 1.5;
+            vel_y = msg.vel.y * 1.5;
         }
 
         // info!("Vel X: {}, Vel Y: {}", vel_x, vel_y);
@@ -680,7 +683,6 @@ async fn main(spawner: Spawner) {
         let rotation_target = 0.0;
 
         rotation_pid.setpoint(rotation_target);
-
         let rotation_pid_result = rotation_pid.next_control_output(yaw);
         let rotation_vel = rotation_pid_result.output;
 
@@ -694,23 +696,24 @@ async fn main(spawner: Spawner) {
         //     motor1, motor2, motor3, motor4
         // );
 
-        let mut md_msg = nv1_msg::md::HubMsgPackRx {
-            enable: true,
-            m1: motor1,
-            m2: motor2,
-            m3: motor3,
-            m4: motor4,
-        };
-
-        if gpio_ui_toggle.is_high() {
-            md_msg = nv1_msg::md::HubMsgPackRx {
+        let pause = gpio_ui_toggle.is_high();
+        let md_msg = if pause {
+            nv1_msg::md::HubMsgPackRx {
                 enable: false,
                 m1: 0.0,
                 m2: 0.0,
                 m3: 0.0,
                 m4: 0.0,
-            };
-        }
+            }
+        } else {
+            nv1_msg::md::HubMsgPackRx {
+                enable: true,
+                m1: motor1,
+                m2: motor2,
+                m3: motor3,
+                m4: motor4,
+            }
+        };
 
         let md_data = postcard::to_vec_cobs::<nv1_msg::md::HubMsgPackRx, 64>(&md_msg).unwrap();
         match uart_md.write(&md_data).await {
@@ -722,7 +725,7 @@ async fn main(spawner: Spawner) {
 
         // send data to Jetson
         let msg_tx = HubMsgPackTx {
-            pause: gpio_ui_toggle.is_high(),
+            pause,
             shutdown: *shutdown.borrow_mut(),
             reboot: *reboot.borrow_mut(),
             vel: nv1_msg::hub::Velocity {
@@ -742,8 +745,10 @@ async fn main(spawner: Spawner) {
             },
             have_ball: adc_have_ball < 800,
         };
-
         G_MSG_TX.lock().await.replace(msg_tx);
+
+        G_NEO_PIXEL_DATA.lock().await.ball_dir = ir_angle;
+        G_NEO_PIXEL_DATA.lock().await.pause = pause;
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
@@ -776,7 +781,7 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
 
                             G_MSG_RX.lock().await.vel = msg.vel;
 
-                            G_JETSON_CONNECTING.store(true, Ordering::Relaxed);
+                            G_NEO_PIXEL_DATA.lock().await.jetson_connecting = true;
                         }
                         Err(_) => {
                             error!("[UART Jetson] postcard decode error");
@@ -800,7 +805,7 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
                         angle: 0.0,
                     };
 
-                    G_JETSON_CONNECTING.store(false, Ordering::Relaxed);
+                    G_NEO_PIXEL_DATA.lock().await.jetson_connecting = false;
 
                     timeout_count = 0;
                 }
@@ -863,17 +868,24 @@ async fn ui_task(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct NeoPixelData {
+    pub jetson_connecting: bool,
+    pub pause: bool,
+    pub ball_dir: f32,
+}
+
 #[embassy_executor::task]
 async fn neo_pixel_task(
     mut neo_pixel: NeoPixelPwm<peripherals::TIM4>,
     dma: &'static mut peripherals::DMA1_CH0,
 ) {
-    let mut neo_pixel_data = [RGB8::default(); 32];
+    const LED_COUNT: usize = 32;
+
+    let mut neo_pixel_data = [RGB8::default(); LED_COUNT];
     for c in neo_pixel_data.iter_mut() {
         *c = RGB8 { r: 0, g: 0, b: 0 };
     }
-
-    const LED_COUNT: usize = 32;
 
     const SPREAD_PATTERN: [usize; 32] = [
         0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 5, 5, 4, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0,
@@ -882,18 +894,34 @@ async fn neo_pixel_task(
 
     let mut loop_count = 0;
     loop {
-        let color = if G_JETSON_CONNECTING.load(Ordering::Relaxed) {
-            RGB8 { r: 0, g: 255, b: 0 }
-        } else {
-            RGB8 { r: 255, g: 0, b: 0 }
-        };
+        let neo_pixel_info = G_NEO_PIXEL_DATA.lock().await.clone();
 
-        let base_index = loop_count % LED_COUNT;
-        let spread = SPREAD_PATTERN[loop_count % 32];
-        for j in 0..3 {
-            let offset = spread * (j as isize - 1) as usize; // 左右に広がる動き
-            let index = (base_index + offset) % LED_COUNT;
-            neo_pixel_data[index] = color;
+        if neo_pixel_info.pause {
+            // windows loading
+            let color = if neo_pixel_info.jetson_connecting {
+                RGB8 { r: 0, g: 255, b: 0 }
+            } else {
+                RGB8 { r: 255, g: 0, b: 0 }
+            };
+
+            let base_index = loop_count % LED_COUNT;
+            let spread = SPREAD_PATTERN[loop_count % 32];
+            for j in 0..3 {
+                let offset = spread * (j as isize - 1) as usize; // 左右に広がる動き
+                let index = (base_index + offset) % LED_COUNT;
+                neo_pixel_data[index] = color;
+            }
+        } else {
+            // ball dir
+            let ball_dir = neo_pixel_info.ball_dir;
+            let ball_dir = if ball_dir < 0.0 {
+                2.0 * PI + ball_dir
+            } else {
+                ball_dir
+            };
+
+            let ball_dir = (ball_dir / (2.0 * PI) * LED_COUNT as f32) as usize;
+            neo_pixel_data[ball_dir] = RGB8 { r: 0, g: 0, b: 255 };
         }
 
         neo_pixel.set_colors(dma, &mut neo_pixel_data).await;
