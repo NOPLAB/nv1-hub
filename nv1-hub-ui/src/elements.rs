@@ -75,7 +75,7 @@ pub struct Value<T, F> {
 
 impl<T, F> Value<T, F>
 where
-    T: Num + Copy,
+    T: Copy,
     F: FnMut(&mut T) -> (),
 {
     pub fn new(title: &'static str, value: T, request: F, font: MonoFont<'static>) -> Self {
@@ -91,7 +91,7 @@ where
 impl<T, U, F> Element<T> for Value<U, F>
 where
     T: DrawTarget<Color = BinaryColor>,
-    U: Num + Copy + Display,
+    U: Copy + Display,
     F: FnMut(&mut U) -> (),
 {
     fn draw(&self, display: &mut T, info: ElementInfo) -> Result<(), T::Error> {

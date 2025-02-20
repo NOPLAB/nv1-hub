@@ -57,7 +57,6 @@ use nv1_hub_ui::{
     Event, HubUI,
 };
 use nv1_hub_ui::{menus, EventKey, HubUIOption};
-use nv1_msg::hub::HubMsgPackTx;
 use rgb::RGB8;
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::prelude::I2CInterface;
@@ -70,8 +69,8 @@ use static_cell::StaticCell;
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
-const IR_ANGLE_THRESHOLD: f32 = 90_f32.to_radians() / 2.0;
-const IR_COUNT_THRESHOLD: f32 = 0.02;
+// const IR_ANGLE_THRESHOLD: f32 = 90_f32.to_radians() / 2.0;
+// const IR_COUNT_THRESHOLD: f32 = 0.02;
 const LINE_OVER_CENTER_THRESHOLD: f32 = 120_f32.to_radians();
 
 bind_interrupts!(struct Irqs {
@@ -85,36 +84,39 @@ bind_interrupts!(struct Irqs {
 });
 
 static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
-static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::HubMsgPackRx> =
-    Mutex::new(nv1_msg::hub::HubMsgPackRx {
-        vel: nv1_msg::hub::Velocity {
+static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::ToHub> = Mutex::new(nv1_msg::hub::ToHub {
+    vel: nv1_msg::hub::Movement {
+        x: 0.0,
+        y: 0.0,
+        angle: 0.0,
+    },
+    kick: false,
+    goal_opp: None,
+    goal_own: None,
+});
+static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::ToJetson>> =
+    Mutex::new(RefCell::new(nv1_msg::hub::ToJetson {
+        sys: nv1_msg::hub::System {
+            pause: false,
+            shutdown: false,
+            reboot: false,
+        },
+        vel: nv1_msg::hub::Movement {
             x: 0.0,
             y: 0.0,
             angle: 0.0,
         },
-        kick: false,
-    });
-static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::HubMsgPackTx>> =
-    Mutex::new(RefCell::new(nv1_msg::hub::HubMsgPackTx {
-        pause: false,
-        shutdown: false,
-        reboot: false,
-        vel: nv1_msg::hub::Velocity {
-            x: 0.0,
-            y: 0.0,
-            angle: 0.0,
+        sensor: nv1_msg::hub::Sensor {
+            ir: nv1_msg::hub::Ir {
+                x: 0.0,
+                y: 0.0,
+                strength: 0.0,
+            },
+            on_line: false,
+            have_ball: false,
         },
-        ir: nv1_msg::hub::Ir {
-            x: 0.0,
-            y: 0.0,
-            strength: 0.0,
-        },
-        line: nv1_msg::hub::Line {
-            x: 0.0,
-            y: 0.0,
-            strength: 0.0,
-        },
-        have_ball: false,
+        opp_goal_color: nv1_msg::hub::GoalColor::Blue,
+        config: nv1_msg::hub::JetsonConfig::None,
     }));
 static G_NEO_PIXEL_DATA: Mutex<ThreadModeRawMutex, NeoPixelData> = Mutex::new(NeoPixelData {
     jetson_connecting: false,
@@ -166,7 +168,7 @@ async fn main(spawner: Spawner) {
     // initialize static heap
     {
         use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 1024;
+        const HEAP_SIZE: usize = 2048;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
@@ -262,6 +264,7 @@ async fn main(spawner: Spawner) {
     let settings = Rc::new(RefCell::new(
         flash_read(&mut f.clone().borrow_mut()).unwrap_or(Settings {
             line_strength: 0.12,
+            opp_goal_color: nv1_msg::hub::GoalColor::Blue,
         }),
     ));
     if settings.borrow_mut().line_strength.is_nan() {
@@ -315,11 +318,11 @@ async fn main(spawner: Spawner) {
     };
 
     // UI view
-    let ui_text = Text::new("INTERFACE", embedded_graphics::mono_font::ascii::FONT_6X10);
+    let ui_text_interface = Text::new("INTERFACE", embedded_graphics::mono_font::ascii::FONT_6X10);
 
     let shutdown = Rc::new(RefCell::new(false));
     let shutdown_clone = shutdown.clone();
-    let ui_shutdown = Button::new(
+    let ui_button_shutdown = Button::new(
         "Shutdown",
         move |pressed| {
             shutdown_clone.replace(pressed);
@@ -329,7 +332,7 @@ async fn main(spawner: Spawner) {
 
     let reboot = Rc::new(RefCell::new(false));
     let reboot_clone = reboot.clone();
-    let ui_reboot = Button::new(
+    let ui_button_reboot = Button::new(
         "Reboot",
         move |pressed| {
             reboot_clone.replace(pressed);
@@ -337,9 +340,39 @@ async fn main(spawner: Spawner) {
         embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
+    let settings_clone = settings.clone();
+    let ui_value_coat = Value::new(
+        "Opp",
+        "",
+        move |value| {
+            *value = match settings_clone.borrow_mut().opp_goal_color {
+                nv1_msg::hub::GoalColor::Blue => "B",
+                nv1_msg::hub::GoalColor::Yellow => "Y",
+            }
+        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
+    );
+
+    let settings_clone = settings.clone();
+    let f_clone = f.clone();
+    let ui_button_coat_change = Button::new(
+        "Switch Coat",
+        move |pressed| {
+            if pressed {
+                let toggle_color = match settings_clone.as_ref().borrow().opp_goal_color {
+                    nv1_msg::hub::GoalColor::Blue => nv1_msg::hub::GoalColor::Yellow,
+                    nv1_msg::hub::GoalColor::Yellow => nv1_msg::hub::GoalColor::Blue,
+                };
+                settings_clone.borrow_mut().opp_goal_color = toggle_color;
+                flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
+            }
+        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
+    );
+
     let line_value = Rc::new(RefCell::new(0.0));
     let line_value_clone = line_value.clone();
-    let ui_line_value = Value::new(
+    let ui_value_line = Value::new(
         "L",
         0.0,
         move |value| {
@@ -350,7 +383,7 @@ async fn main(spawner: Spawner) {
 
     let settings_clone = settings.clone();
     let f_clone = f.clone();
-    let ui_line_strength = Slider::new(
+    let ui_slider_line_strength = Slider::new(
         settings.borrow_mut().line_strength,
         0.0,
         1.0,
@@ -363,13 +396,14 @@ async fn main(spawner: Spawner) {
     );
 
     let settings_clone = settings.clone();
-    let ui_settings_reset = Button::new(
-        "S Reset",
+    let f_clone = f.clone();
+    let ui_button_settings_reset = Button::new(
+        "Reset",
         move |pressed| {
             if pressed {
                 settings_clone.borrow_mut().line_strength = 0.12;
-                flash_write(&mut f.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
-                settings_clone.replace(flash_read(&mut f.borrow_mut()).unwrap());
+                flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
+                settings_clone.replace(flash_read(&mut f_clone.borrow_mut()).unwrap());
             }
         },
         embedded_graphics::mono_font::ascii::FONT_6X10,
@@ -381,12 +415,14 @@ async fn main(spawner: Spawner) {
             DisplaySize128x64,
             BufferedGraphicsMode<DisplaySize128x64>,
         >,
-        ui_text,
-        ui_shutdown,
-        ui_reboot,
-        ui_line_value,
-        ui_line_strength,
-        ui_settings_reset
+        ui_text_interface,
+        ui_button_shutdown,
+        ui_button_reboot,
+        ui_value_coat,
+        ui_button_coat_change,
+        ui_value_line,
+        ui_slider_line_strength,
+        ui_button_settings_reset
     ];
     let menu = menus![
         Ssd1306<
@@ -635,7 +671,7 @@ async fn main(spawner: Spawner) {
 
         let (ir_x, ir_y, _ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
 
-        let adc_ir_over_count = adc_ir.iter().filter(|x| **x > IR_COUNT_THRESHOLD).count();
+        // let adc_ir_over_count = adc_ir.iter().filter(|x| **x > IR_COUNT_THRESHOLD).count();
         // info!("IR over count: {}", adc_ir_over_count);
 
         let ir_angle = libm::atan2f(ir_y, ir_x);
@@ -687,7 +723,7 @@ async fn main(spawner: Spawner) {
 
         let pause = gpio_ui_toggle.is_high();
         let md_msg = if pause {
-            nv1_msg::md::HubMsgPackRx {
+            nv1_msg::md::ToMD {
                 enable: false,
                 m1: 0.0,
                 m2: 0.0,
@@ -695,7 +731,7 @@ async fn main(spawner: Spawner) {
                 m4: 0.0,
             }
         } else {
-            nv1_msg::md::HubMsgPackRx {
+            nv1_msg::md::ToMD {
                 enable: true,
                 m1: motor1,
                 m2: motor2,
@@ -704,7 +740,7 @@ async fn main(spawner: Spawner) {
             }
         };
 
-        let md_data = postcard::to_vec_cobs::<nv1_msg::md::HubMsgPackRx, 64>(&md_msg).unwrap();
+        let md_data = postcard::to_vec_cobs::<nv1_msg::md::ToMD, 64>(&md_msg).unwrap();
         match uart_md.write(&md_data).await {
             Ok(_) => {}
             Err(err) => {
@@ -712,27 +748,31 @@ async fn main(spawner: Spawner) {
             }
         };
 
+        let settings = settings.borrow_mut();
         // send data to Jetson
-        let msg_tx = HubMsgPackTx {
-            pause,
-            shutdown: *shutdown.borrow_mut(),
-            reboot: *reboot.borrow_mut(),
-            vel: nv1_msg::hub::Velocity {
+        let msg_tx = nv1_msg::hub::ToJetson {
+            sys: nv1_msg::hub::System {
+                pause,
+                shutdown: *shutdown.borrow_mut(),
+                reboot: *reboot.borrow_mut(),
+            },
+            vel: nv1_msg::hub::Movement {
                 x: msg.vel.x,
                 y: msg.vel.y,
                 angle: yaw,
             },
-            ir: nv1_msg::hub::Ir {
-                x: ir_x,
-                y: ir_y,
-                strength: 0.0,
+            sensor: nv1_msg::hub::Sensor {
+                ir: nv1_msg::hub::Ir {
+                    x: ir_x,
+                    y: ir_y,
+                    strength: 0.0,
+                },
+
+                on_line: line_strength > settings.line_strength,
+                have_ball: adc_have_ball < 800,
             },
-            line: nv1_msg::hub::Line {
-                x: line_vel_x,
-                y: line_vel_y,
-                strength: 0.0,
-            },
-            have_ball: adc_have_ball < 800,
+            opp_goal_color: settings.opp_goal_color,
+            config: nv1_msg::hub::JetsonConfig::None, // TODO
         };
         G_MSG_TX.lock().await.replace(msg_tx);
 
@@ -741,54 +781,46 @@ async fn main(spawner: Spawner) {
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
-        info!("elapsed time: {}", elapsed_time.as_millis());
+        // info!("elapsed time: {}", elapsed_time.as_millis());
         prev_time = now_time;
     }
 }
 
 #[embassy_executor::task]
 async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
-    const RX_DATA_SIZE: usize = 15;
+    let (mut uart_tx, uart_rx) = uart.split();
 
-    let mut timeout_count = 0;
+    let mut dma_buf = [0u8; 128];
+    let mut uart_rx = uart_rx.into_ring_buffered(&mut dma_buf);
+
+    uart_rx.start_uart();
 
     loop {
-        let mut msg_with_cobs = [0u8; RX_DATA_SIZE];
-        let timeout_res =
-            with_timeout(Duration::from_millis(10), uart.read(&mut msg_with_cobs)).await;
-        match timeout_res {
-            Ok(rx) => match rx {
-                Ok(_) => {
-                    // info!("[UART Jetson] received data: {:?}", msg_with_cobs);
-                    match postcard::from_bytes_cobs::<nv1_msg::hub::HubMsgPackRx>(
-                        &mut msg_with_cobs,
-                    ) {
-                        Ok(msg) => {
-                            // info!("Linear X: {}", msg.vel.x);
-                            // info!("Linear Y: {}", msg.vel.y);
-                            // info!("Angular Z: {}", msg.vel.angle);
+        let mut byte = [0u8; 1];
+        let mut msg_with_cobs = [0u8; 64];
+        let mut c = 0;
+        loop {
+            let timeout_res =
+                with_timeout(Duration::from_millis(50), uart_rx.read(&mut byte)).await;
+            match timeout_res {
+                Ok(receive_res) => match receive_res {
+                    Ok(_size) => {
+                        msg_with_cobs[c] = byte[0];
+                        c += 1;
 
-                            G_MSG_RX.lock().await.vel = msg.vel;
-
-                            G_NEO_PIXEL_DATA.lock().await.jetson_connecting = true;
+                        if byte[0] == 0 {
+                            break;
                         }
-                        Err(_) => {
-                            error!("[UART Jetson] postcard decode error");
-                        }
-                    };
-                    timeout_count = 0;
-                }
-                Err(err) => {
-                    error!("[UART Jetson] read error: {:?}", err);
-                }
-            },
-            Err(_) => {
-                timeout_count += 1;
-
-                if timeout_count > 5 {
+                    }
+                    Err(err) => {
+                        error!("[UART Jetson] read error: {:?}", err);
+                        uart_rx.start_uart();
+                    }
+                },
+                Err(_) => {
                     error!("[UART Jetson] timeout");
 
-                    G_MSG_RX.lock().await.vel = nv1_msg::hub::Velocity {
+                    G_MSG_RX.lock().await.vel = nv1_msg::hub::Movement {
                         x: 0.0,
                         y: 0.0,
                         angle: 0.0,
@@ -796,15 +828,30 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
 
                     G_NEO_PIXEL_DATA.lock().await.jetson_connecting = false;
 
-                    timeout_count = 0;
+                    break;
                 }
             }
         }
 
+        match postcard::from_bytes_cobs::<nv1_msg::hub::ToHub>(&mut msg_with_cobs) {
+            Ok(msg) => {
+                // info!("Linear X: {}", msg.vel.x);
+                // info!("Linear Y: {}", msg.vel.y);
+                // info!("Angular Z: {}", msg.vel.angle);
+
+                G_MSG_RX.lock().await.vel = msg.vel;
+
+                G_NEO_PIXEL_DATA.lock().await.jetson_connecting = true;
+            }
+            Err(_) => {
+                error!("[UART Jetson] postcard decode error");
+            }
+        };
+
         let msg = G_MSG_TX.lock().await.take();
-        match postcard::to_vec_cobs::<nv1_msg::hub::HubMsgPackTx, 64>(&msg) {
+        match postcard::to_vec_cobs::<nv1_msg::hub::ToJetson, 64>(&msg) {
             Ok(msg_with_cobs) => {
-                match uart.write(&msg_with_cobs).await {
+                match uart_tx.write(&msg_with_cobs).await {
                     Ok(_) => {
                         // info!("[UART Jetson] sent data, len: {}", msg_with_cobs.len());
                     }
@@ -920,27 +967,35 @@ async fn neo_pixel_task(
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, Default)]
 struct Settings {
     pub line_strength: f32,
+    pub opp_goal_color: nv1_msg::hub::GoalColor,
 }
 
 fn flash_read(f: &mut Flash<'_, Blocking>) -> Result<Settings, embassy_stm32::flash::Error> {
-    let mut buf = [0u8; 32];
-    f.blocking_read(128 * 1024, &mut buf)?;
+    let mut buf = [0u8; 128];
+    f.blocking_read(0x6_0000, &mut buf)?;
 
-    Ok(postcard::from_bytes(&buf).unwrap())
+    info!("flash read: {:?}", buf);
+
+    let decoded = match postcard::from_bytes(&buf) {
+        Ok(d) => d,
+        Err(_) => Default::default(),
+    };
+
+    Ok(decoded)
 }
 
 fn flash_write(
     f: &mut Flash<'_, Blocking>,
     settings: &Settings,
 ) -> Result<(), embassy_stm32::flash::Error> {
-    let mut buf = [0u8; 32];
+    let mut buf = [0u8; 128];
     postcard::to_slice(settings, &mut buf).unwrap();
 
-    f.blocking_erase(128 * 1024, 128 * 1024 + 128 * 1024)?;
-    f.blocking_write(128 * 1024, &buf)?;
+    f.blocking_erase(0x6_0000, 0x6_0000 + 128 * 1024)?;
+    f.blocking_write(0x6_0000, &buf)?;
 
     Ok(())
 }
