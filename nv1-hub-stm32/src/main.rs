@@ -11,6 +11,7 @@ mod omni;
 extern crate alloc;
 
 use embedded_alloc::LlffHeap as Heap;
+use nv1_msg::hub::OpenCVOpp;
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -85,6 +86,7 @@ bind_interrupts!(struct Irqs {
 });
 
 static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
+static G_BNO08X_YAW: Mutex<ThreadModeRawMutex, f32> = Mutex::new(0.0);
 static G_JETSON_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::ToHub> =
     Mutex::new(nv1_msg::hub::ToHub {
         vel: nv1_msg::hub::Movement {
@@ -217,13 +219,19 @@ async fn main(spawner: Spawner) {
         uart_bno_config,
     )
     .unwrap();
-
     // reset bno08x
     let mut gpio_reset = Output::new(p.PA0, Level::High, embassy_stm32::gpio::Speed::Low);
     gpio_reset.set_low();
     Timer::after(Duration::from_millis(10)).await;
     gpio_reset.set_high();
     Timer::after(Duration::from_millis(100)).await;
+    let (mut processor, mut parser) = match bno08x_rvc::create(G_BB.borrow()) {
+        Ok((proc, pars)) => (proc, pars),
+        Err(_e) => {
+            error!("Can't create bno08x-rvc");
+            loop {}
+        }
+    };
 
     // initialize ADC
     let mut adc = Adc::new(p.ADC1);
@@ -452,19 +460,10 @@ async fn main(spawner: Spawner) {
         display.flush().unwrap();
     }
 
-    let (mut proc, mut parser) = match bno08x_rvc::create(G_BB.borrow()) {
-        Ok((proc, pars)) => (proc, pars),
-        Err(_e) => {
-            error!("Can't create bno08x-rvc");
-            loop {}
-        }
-    };
-
     let shutdown = shutdown.clone();
     let reboot = reboot.clone();
 
     let neo_pixel_pwm_hz = Hertz::khz(500);
-
     let neo_pixel_pwm = SimplePwm::new(
         p.TIM4,
         Some(PwmPin::new_ch1(p.PB6, OutputType::PushPull)),
@@ -474,13 +473,9 @@ async fn main(spawner: Spawner) {
         neo_pixel_pwm_hz,
         CountingMode::EdgeAlignedUp,
     );
-
     let neo_pixel = NeoPixelPwm::new(neo_pixel_pwm, neo_pixel_pwm_hz);
     static NEO_PIXEL_DMA: StaticCell<peripherals::DMA1_CH0> = StaticCell::new();
     let neo_pixel_dma: &'static mut peripherals::DMA1_CH0 = NEO_PIXEL_DMA.init(p.DMA1_CH0);
-
-    // loop variables
-    let mut yaw = 0.0;
 
     let mut rotation_pid: pid::Pid<f32> = pid::Pid::new(0.0, 100.0);
     rotation_pid.p(8.0, 100.0);
@@ -499,6 +494,9 @@ async fn main(spawner: Spawner) {
     }
     let mut prev_adc_state = AdcState::OnGround;
 
+    let mut yaw = 0.0;
+    let mut bno08x_buf = [0u8; 19];
+
     spawner.must_spawn(uart_jetson_task(uart_jetson));
     if ssd1306_init_success {
         spawner.must_spawn(ui_task(ui, gpio_ui_up, gpio_ui_down, gpio_ui_enter));
@@ -509,16 +507,14 @@ async fn main(spawner: Spawner) {
 
     let mut prev_time = Instant::now();
     loop {
-        let mut buf = [0u8; 19];
-        let _ = uart_bno.read(&mut buf).await;
-        proc.process_slice(&buf).unwrap();
-        parser
-            .worker(|frame| {
-                yaw = -((frame.as_pretty_frame().yaw as f32).to_radians());
-                // info!("yaw: {}", yaw);
-            })
-            .unwrap();
+        // 3000us
+        let _ = uart_bno.read(&mut bno08x_buf).await;
+        processor.process_slice(&bno08x_buf).unwrap();
+        let _ = parser.worker(|frame| {
+            yaw = -(frame.as_pretty_frame().yaw.to_radians());
+        });
 
+        // 600us
         let mut adc_line = [0u16; 32];
         let mut adc_ir = [0u16; 16];
         let adc_have_ball = adc.blocking_read(&mut p.PC3);
@@ -570,14 +566,17 @@ async fn main(spawner: Spawner) {
             adc_ir[i] = adc.blocking_read(&mut p.PC2);
         }
 
+        // 350us
         let adc_line = adc_line
             .iter()
             .map(|x| (*x as f32) / 4096.0)
             .collect::<Vec<_>>();
 
+        // 1000us
         let (line_vel_x, line_vel_y, line_strength) =
             calculate_adc_vec(&adc_line, &adc_line_sin, &adc_line_cos, 1.0);
 
+        // 200us?
         let line_vel: Option<(f32, f32)> = match prev_adc_state {
             AdcState::OnGround => {
                 if line_strength > settings.borrow_mut().line_strength {
@@ -662,23 +661,19 @@ async fn main(spawner: Spawner) {
             }
         };
 
+        // 1000us
         let adc_line_max = adc_line.into_iter().reduce(f32::max).unwrap_or(0.);
         line_value.replace(adc_line_max);
-
         adc_ir.iter_mut().for_each(|x| *x = 4096 - *x);
         let adc_ir = adc_ir
             .iter()
             .map(|x| (*x as f32) / 4096.0)
             .collect::<Vec<_>>();
-
         let (ir_x, ir_y, _ir_strength) = calculate_adc_vec(&adc_ir, &adc_ir_sin, &adc_ir_cos, 1.0);
-
         // let adc_ir_over_count = adc_ir.iter().filter(|x| **x > IR_COUNT_THRESHOLD).count();
         // info!("IR over count: {}", adc_ir_over_count);
-
         let ir_angle = libm::atan2f(ir_y, ir_x);
         // info!("IR angle: {}", ir_angle);
-
         // let ir_vel = if adc_ir_over_count > 10
         //     && ir_angle > PI / 2.0 - IR_ANGLE_THRESHOLD
         //     && ir_angle < PI / 2.0 + IR_ANGLE_THRESHOLD
@@ -687,37 +682,27 @@ async fn main(spawner: Spawner) {
         // } else {
         //     None
         // };
-
         // info!("line_strength: {}", line_strength);
         // info!("line_strength: {}", settings.borrow_mut().line_strength);
 
-        let msg = G_JETSON_RX.lock().await.clone();
-
-        // Line detect
-        let vel_x;
-        let vel_y;
-        if let Some((line_vel_x, line_vel_y)) = line_vel {
+        let received_msg = G_JETSON_RX.lock().await.clone();
+        let (vel_x, vel_y) = if let Some((line_vel_x, line_vel_y)) = line_vel {
             info!("[LINE] Line detected");
-            vel_x = line_vel_x * 2.0;
-            vel_y = line_vel_y * 2.0;
+            (line_vel_x * 2.0, line_vel_y * 2.0)
         } else {
-            vel_x = msg.vel.x * 1.5;
-            vel_y = msg.vel.y * 1.5;
-        }
-
+            (received_msg.vel.x * 1.5, received_msg.vel.y * 1.5)
+        };
         // info!("Vel X: {}, Vel Y: {}", vel_x, vel_y);
 
+        // 1000us~1300us
         let rotation_target = 0.0;
-
         rotation_pid.setpoint(rotation_target);
         let rotation_pid_result = rotation_pid.next_control_output(yaw);
         let rotation_vel = rotation_pid_result.output;
-
         let motor1 = wheel_calc1.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
         let motor2 = wheel_calc2.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
         let motor3 = wheel_calc3.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
         let motor4 = wheel_calc4.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
-
         // info!(
         //     "Motor1: {}, Motor2: {}, Motor3: {}, Motor4: {}",
         //     motor1, motor2, motor3, motor4
@@ -750,8 +735,25 @@ async fn main(spawner: Spawner) {
             }
         };
 
+        let config = match settings.as_ref().borrow().opp_goal_color {
+            nv1_msg::hub::GoalColor::Blue => nv1_msg::hub::JetsonConfig::OpenCVOpp(OpenCVOpp {
+                h_min: 0,
+                h_max: 100,
+                s_min: 110,
+                s_max: 220,
+                v_min: 130,
+                v_max: 255,
+            }),
+            nv1_msg::hub::GoalColor::Yellow => nv1_msg::hub::JetsonConfig::OpenCVOpp(OpenCVOpp {
+                h_min: 0,
+                h_max: 100,
+                s_min: 110,
+                s_max: 220,
+                v_min: 130,
+                v_max: 255,
+            }),
+        };
         let settings = settings.borrow_mut();
-        // send data to Jetson
         let msg_tx = nv1_msg::hub::ToJetson {
             sys: nv1_msg::hub::System {
                 pause,
@@ -759,8 +761,8 @@ async fn main(spawner: Spawner) {
                 reboot: *reboot.borrow_mut(),
             },
             vel: nv1_msg::hub::Movement {
-                x: msg.vel.x,
-                y: msg.vel.y,
+                x: received_msg.vel.x,
+                y: received_msg.vel.y,
                 angle: yaw,
             },
             sensor: nv1_msg::hub::Sensor {
@@ -774,7 +776,7 @@ async fn main(spawner: Spawner) {
                 have_ball: adc_have_ball < 800,
             },
             opp_goal_color: settings.opp_goal_color,
-            config: nv1_msg::hub::JetsonConfig::None, // TODO
+            config,
         };
         G_JETSON_TX.lock().await.replace(msg_tx);
 
@@ -792,7 +794,7 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
+async fn uart_jetson_task(uart: Uart<'static, mode::Async>) {
     let (mut uart_tx, uart_rx) = uart.split();
 
     let mut dma_buf = [0u8; 128];
@@ -837,7 +839,6 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
                 }
             }
         }
-
         match postcard::from_bytes_cobs::<nv1_msg::hub::ToHub>(&mut msg_with_cobs) {
             Ok(msg) => {
                 // info!("Linear X: {}", msg.vel.x);
@@ -968,7 +969,7 @@ async fn neo_pixel_task(
         neo_pixel.set_colors(dma, &mut neo_pixel_data).await;
 
         loop_count = (loop_count + 1) % LED_COUNT;
-        Timer::after(Duration::from_millis(30)).await;
+        Timer::after(Duration::from_millis(40)).await;
     }
 }
 
