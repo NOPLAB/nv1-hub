@@ -72,6 +72,7 @@ use {defmt_rtt as _, panic_probe as _};
 // const IR_ANGLE_THRESHOLD: f32 = 90_f32.to_radians() / 2.0;
 // const IR_COUNT_THRESHOLD: f32 = 0.02;
 const LINE_OVER_CENTER_THRESHOLD: f32 = 120_f32.to_radians();
+const LOOP_MS: u64 = 10;
 
 bind_interrupts!(struct Irqs {
     USART3 => usart::InterruptHandler<peripherals::USART3>;
@@ -84,17 +85,18 @@ bind_interrupts!(struct Irqs {
 });
 
 static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
-static G_MSG_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::ToHub> = Mutex::new(nv1_msg::hub::ToHub {
-    vel: nv1_msg::hub::Movement {
-        x: 0.0,
-        y: 0.0,
-        angle: 0.0,
-    },
-    kick: false,
-    goal_opp: None,
-    goal_own: None,
-});
-static G_MSG_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::ToJetson>> =
+static G_JETSON_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::ToHub> =
+    Mutex::new(nv1_msg::hub::ToHub {
+        vel: nv1_msg::hub::Movement {
+            x: 0.0,
+            y: 0.0,
+            angle: 0.0,
+        },
+        kick: false,
+        goal_opp: None,
+        goal_own: None,
+    });
+static G_JETSON_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::ToJetson>> =
     Mutex::new(RefCell::new(nv1_msg::hub::ToJetson {
         sys: nv1_msg::hub::System {
             pause: false,
@@ -227,15 +229,15 @@ async fn main(spawner: Spawner) {
     let mut adc = Adc::new(p.ADC1);
     adc.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES3);
 
-    let mut line_s0 = Output::new(p.PB12, Level::Low, embassy_stm32::gpio::Speed::High);
-    let mut line_s1 = Output::new(p.PB13, Level::Low, embassy_stm32::gpio::Speed::High);
-    let mut line_s2 = Output::new(p.PB14, Level::Low, embassy_stm32::gpio::Speed::High);
-    let mut line_s3 = Output::new(p.PB15, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut line_s0 = Output::new(p.PB12, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
+    let mut line_s1 = Output::new(p.PB13, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
+    let mut line_s2 = Output::new(p.PB14, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
+    let mut line_s3 = Output::new(p.PB15, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
 
-    let mut ir_s0 = Output::new(p.PB0, Level::Low, embassy_stm32::gpio::Speed::High);
-    let mut ir_s1 = Output::new(p.PB1, Level::Low, embassy_stm32::gpio::Speed::High);
-    let mut ir_s2 = Output::new(p.PB4, Level::Low, embassy_stm32::gpio::Speed::High);
-    let mut ir_s3 = Output::new(p.PB5, Level::Low, embassy_stm32::gpio::Speed::High);
+    let mut ir_s0 = Output::new(p.PB0, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
+    let mut ir_s1 = Output::new(p.PB1, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
+    let mut ir_s2 = Output::new(p.PB4, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
+    let mut ir_s3 = Output::new(p.PB5, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
 
     let mut adc_line_sin = [0.0_f32; 32];
     let mut adc_line_cos = [0.0_f32; 32];
@@ -689,7 +691,7 @@ async fn main(spawner: Spawner) {
         // info!("line_strength: {}", line_strength);
         // info!("line_strength: {}", settings.borrow_mut().line_strength);
 
-        let msg = G_MSG_RX.lock().await.clone();
+        let msg = G_JETSON_RX.lock().await.clone();
 
         // Line detect
         let vel_x;
@@ -774,14 +776,17 @@ async fn main(spawner: Spawner) {
             opp_goal_color: settings.opp_goal_color,
             config: nv1_msg::hub::JetsonConfig::None, // TODO
         };
-        G_MSG_TX.lock().await.replace(msg_tx);
+        G_JETSON_TX.lock().await.replace(msg_tx);
 
         G_NEO_PIXEL_DATA.lock().await.ball_dir = ir_angle;
         G_NEO_PIXEL_DATA.lock().await.pause = pause;
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
-        // info!("elapsed time: {}", elapsed_time.as_millis());
+        info!("elapsed time: {}", elapsed_time.as_micros());
+        if LOOP_MS * 1000 > elapsed_time.as_micros() {
+            Timer::after_micros(LOOP_MS * 1000 - elapsed_time.as_micros()).await;
+        }
         prev_time = now_time;
     }
 }
@@ -820,7 +825,7 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
                 Err(_) => {
                     error!("[UART Jetson] timeout");
 
-                    G_MSG_RX.lock().await.vel = nv1_msg::hub::Movement {
+                    G_JETSON_RX.lock().await.vel = nv1_msg::hub::Movement {
                         x: 0.0,
                         y: 0.0,
                         angle: 0.0,
@@ -839,7 +844,7 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
                 // info!("Linear Y: {}", msg.vel.y);
                 // info!("Angular Z: {}", msg.vel.angle);
 
-                G_MSG_RX.lock().await.vel = msg.vel;
+                G_JETSON_RX.lock().await.vel = msg.vel;
 
                 G_NEO_PIXEL_DATA.lock().await.jetson_connecting = true;
             }
@@ -848,7 +853,7 @@ async fn uart_jetson_task(mut uart: Uart<'static, mode::Async>) {
             }
         };
 
-        let msg = G_MSG_TX.lock().await.take();
+        let msg = G_JETSON_TX.lock().await.take();
         match postcard::to_vec_cobs::<nv1_msg::hub::ToJetson, 64>(&msg) {
             Ok(msg_with_cobs) => {
                 match uart_tx.write(&msg_with_cobs).await {
