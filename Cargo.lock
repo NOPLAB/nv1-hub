@@ -1039,8 +1039,8 @@ dependencies = [
 
 [[package]]
 name = "nv1-msg"
-version = "0.1.8"
-source = "git+https://github.com/NOPLAB/nv1-msg?rev=3eaad74#3eaad7494d3b0aea73a167085626e849581ed814"
+version = "0.1.9"
+source = "git+https://github.com/NOPLAB/nv1-msg?rev=d1dcf01#d1dcf01c481007dee56a9c3b790df777539b97ee"
 dependencies = [
  "serde",
 ]

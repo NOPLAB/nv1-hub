@@ -11,7 +11,8 @@ mod omni;
 extern crate alloc;
 
 use embedded_alloc::LlffHeap as Heap;
-use nv1_msg::hub::OpenCVOpp;
+use nv1_msg::hub::HSV;
+use serde::{Deserialize, Serialize};
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -40,7 +41,7 @@ use embassy_stm32::{
     i2c::{self, I2c},
     peripherals,
     time::Hertz,
-    usart::{self, Config, Uart},
+    usart::{self, Uart},
 };
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
@@ -73,7 +74,27 @@ use {defmt_rtt as _, panic_probe as _};
 // const IR_ANGLE_THRESHOLD: f32 = 90_f32.to_radians() / 2.0;
 // const IR_COUNT_THRESHOLD: f32 = 0.02;
 const LINE_OVER_CENTER_THRESHOLD: f32 = 120_f32.to_radians();
-const LOOP_MS: u64 = 10;
+const LOOP_US: u64 = 3000;
+const DEFAULT_SETTINGS: Settings = Settings {
+    line_strength: 0.12,
+    opp_goal_color: GoalColor::Blue,
+    opencv_goal_blue: HSV {
+        h_min: 100,
+        h_max: 120,
+        s_min: 100,
+        s_max: 255,
+        v_min: 100,
+        v_max: 255,
+    },
+    opencv_goal_yellow: HSV {
+        h_min: 0,
+        h_max: 255,
+        s_min: 0,
+        s_max: 255,
+        v_min: 0,
+        v_max: 255,
+    },
+};
 
 bind_interrupts!(struct Irqs {
     USART3 => usart::InterruptHandler<peripherals::USART3>;
@@ -86,7 +107,7 @@ bind_interrupts!(struct Irqs {
 });
 
 static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
-static G_BNO08X_YAW: Mutex<ThreadModeRawMutex, f32> = Mutex::new(0.0);
+static G_YAW: Mutex<ThreadModeRawMutex, RefCell<f32>> = Mutex::new(RefCell::new(0.0));
 static G_JETSON_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::ToHub> =
     Mutex::new(nv1_msg::hub::ToHub {
         vel: nv1_msg::hub::Movement {
@@ -119,7 +140,6 @@ static G_JETSON_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::ToJetson>> =
             on_line: false,
             have_ball: false,
         },
-        opp_goal_color: nv1_msg::hub::GoalColor::Blue,
         config: nv1_msg::hub::JetsonConfig::None,
     }));
 static G_NEO_PIXEL_DATA: Mutex<ThreadModeRawMutex, NeoPixelData> = Mutex::new(NeoPixelData {
@@ -167,6 +187,13 @@ where
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+enum GoalColor {
+    #[default]
+    Blue,
+    Yellow,
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // initialize static heap
@@ -177,11 +204,38 @@ async fn main(spawner: Spawner) {
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
 
+    let mut config = embassy_stm32::Config::default();
+
+    {
+        use embassy_stm32::rcc;
+
+        config.rcc.hse = Some(rcc::Hse {
+            freq: Hertz(20_000_000),
+            mode: rcc::HseMode::Oscillator,
+        });
+
+        config.rcc.pll_src = rcc::PllSource::HSE;
+        config.rcc.pll = Some(rcc::Pll {
+            prediv: rcc::PllPreDiv::DIV16,
+            mul: rcc::PllMul::MUL288,
+            divp: Some(rcc::PllPDiv::DIV2),
+            divq: None,
+            divr: Some(rcc::PllRDiv::DIV2),
+        });
+
+        config.rcc.sys = rcc::Sysclk::PLL1_P;
+
+        config.rcc.apb1_pre = rcc::APBPrescaler::DIV4;
+        config.rcc.apb2_pre = rcc::APBPrescaler::DIV2;
+    }
+
     // initialize peripherals
-    let mut p = embassy_stm32::init(Default::default());
+    let mut p = embassy_stm32::init(config);
+
+    info!("Hello, world!");
 
     // initialize UARTs
-    let mut uart_jetson_config = Config::default();
+    let mut uart_jetson_config = usart::Config::default();
     uart_jetson_config.baudrate = 115200;
     let uart_jetson = Uart::new(
         p.USART3,
@@ -194,7 +248,7 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    let mut uart_md_config = Config::default();
+    let mut uart_md_config = usart::Config::default();
     uart_md_config.baudrate = 115200;
     let mut uart_md = Uart::new(
         p.UART4,
@@ -207,7 +261,7 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    let mut uart_bno_config = Config::default();
+    let mut uart_bno_config = usart::Config::default();
     uart_bno_config.baudrate = bno08x_rvc::BNO08X_UART_RVC_BAUD_RATE;
     let mut uart_bno = Uart::new(
         p.USART6,
@@ -225,13 +279,6 @@ async fn main(spawner: Spawner) {
     Timer::after(Duration::from_millis(10)).await;
     gpio_reset.set_high();
     Timer::after(Duration::from_millis(100)).await;
-    let (mut processor, mut parser) = match bno08x_rvc::create(G_BB.borrow()) {
-        Ok((proc, pars)) => (proc, pars),
-        Err(_e) => {
-            error!("Can't create bno08x-rvc");
-            loop {}
-        }
-    };
 
     // initialize ADC
     let mut adc = Adc::new(p.ADC1);
@@ -272,10 +319,7 @@ async fn main(spawner: Spawner) {
     // initialize flash
     let f = Rc::new(RefCell::new(Flash::new_blocking(p.FLASH)));
     let settings = Rc::new(RefCell::new(
-        flash_read(&mut f.clone().borrow_mut()).unwrap_or(Settings {
-            line_strength: 0.12,
-            opp_goal_color: nv1_msg::hub::GoalColor::Blue,
-        }),
+        flash_read(&mut f.clone().borrow_mut()).unwrap_or(DEFAULT_SETTINGS),
     ));
     if settings.borrow_mut().line_strength.is_nan() {
         settings.borrow_mut().line_strength = 0.12;
@@ -356,8 +400,8 @@ async fn main(spawner: Spawner) {
         "",
         move |value| {
             *value = match settings_clone.borrow_mut().opp_goal_color {
-                nv1_msg::hub::GoalColor::Blue => "B",
-                nv1_msg::hub::GoalColor::Yellow => "Y",
+                GoalColor::Blue => "B",
+                GoalColor::Yellow => "Y",
             }
         },
         embedded_graphics::mono_font::ascii::FONT_6X10,
@@ -370,8 +414,8 @@ async fn main(spawner: Spawner) {
         move |pressed| {
             if pressed {
                 let toggle_color = match settings_clone.as_ref().borrow().opp_goal_color {
-                    nv1_msg::hub::GoalColor::Blue => nv1_msg::hub::GoalColor::Yellow,
-                    nv1_msg::hub::GoalColor::Yellow => nv1_msg::hub::GoalColor::Blue,
+                    GoalColor::Blue => GoalColor::Yellow,
+                    GoalColor::Yellow => GoalColor::Blue,
                 };
                 settings_clone.borrow_mut().opp_goal_color = toggle_color;
                 flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
@@ -411,8 +455,7 @@ async fn main(spawner: Spawner) {
         "Reset",
         move |pressed| {
             if pressed {
-                settings_clone.borrow_mut().line_strength = 0.12;
-                flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
+                flash_write(&mut f_clone.borrow_mut(), &DEFAULT_SETTINGS).unwrap();
                 settings_clone.replace(flash_read(&mut f_clone.borrow_mut()).unwrap());
             }
         },
@@ -457,7 +500,7 @@ async fn main(spawner: Spawner) {
     let mut ui = HubUI::new(ssd1306, menu, ui_option);
     let display = ui.update(&Event::None);
     if ssd1306_init_success {
-        display.flush().unwrap();
+        ssd1306_init_success = display.flush().is_ok();
     }
 
     let shutdown = shutdown.clone();
@@ -494,9 +537,7 @@ async fn main(spawner: Spawner) {
     }
     let mut prev_adc_state = AdcState::OnGround;
 
-    let mut yaw = 0.0;
-    let mut bno08x_buf = [0u8; 19];
-
+    spawner.must_spawn(bno08x_task(uart_bno));
     spawner.must_spawn(uart_jetson_task(uart_jetson));
     if ssd1306_init_success {
         spawner.must_spawn(ui_task(ui, gpio_ui_up, gpio_ui_down, gpio_ui_enter));
@@ -507,12 +548,7 @@ async fn main(spawner: Spawner) {
 
     let mut prev_time = Instant::now();
     loop {
-        // 3000us
-        let _ = uart_bno.read(&mut bno08x_buf).await;
-        processor.process_slice(&bno08x_buf).unwrap();
-        let _ = parser.worker(|frame| {
-            yaw = -(frame.as_pretty_frame().yaw.to_radians());
-        });
+        let yaw = G_YAW.lock().await.clone().take();
 
         // 600us
         let mut adc_line = [0u16; 32];
@@ -735,24 +771,16 @@ async fn main(spawner: Spawner) {
             }
         };
 
-        let config = match settings.as_ref().borrow().opp_goal_color {
-            nv1_msg::hub::GoalColor::Blue => nv1_msg::hub::JetsonConfig::OpenCVOpp(OpenCVOpp {
-                h_min: 0,
-                h_max: 100,
-                s_min: 110,
-                s_max: 220,
-                v_min: 130,
-                v_max: 255,
-            }),
-            nv1_msg::hub::GoalColor::Yellow => nv1_msg::hub::JetsonConfig::OpenCVOpp(OpenCVOpp {
-                h_min: 0,
-                h_max: 100,
-                s_min: 110,
-                s_max: 220,
-                v_min: 130,
-                v_max: 255,
-            }),
+        let opp_color = match settings.as_ref().borrow().opp_goal_color {
+            GoalColor::Blue => settings.as_ref().borrow().opencv_goal_blue,
+            GoalColor::Yellow => settings.as_ref().borrow().opencv_goal_yellow,
         };
+
+        let own_color = match settings.as_ref().borrow().opp_goal_color {
+            GoalColor::Blue => settings.as_ref().borrow().opencv_goal_yellow,
+            GoalColor::Yellow => settings.as_ref().borrow().opencv_goal_blue,
+        };
+
         let settings = settings.borrow_mut();
         let msg_tx = nv1_msg::hub::ToJetson {
             sys: nv1_msg::hub::System {
@@ -775,8 +803,10 @@ async fn main(spawner: Spawner) {
                 on_line: line_strength > settings.line_strength,
                 have_ball: adc_have_ball < 800,
             },
-            opp_goal_color: settings.opp_goal_color,
-            config,
+            config: nv1_msg::hub::JetsonConfig::OpenCV(nv1_msg::hub::OpenCVConfig {
+                opp_color,
+                own_color,
+            }),
         };
         G_JETSON_TX.lock().await.replace(msg_tx);
 
@@ -786,10 +816,32 @@ async fn main(spawner: Spawner) {
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
         info!("elapsed time: {}", elapsed_time.as_micros());
-        if LOOP_MS * 1000 > elapsed_time.as_micros() {
-            Timer::after_micros(LOOP_MS * 1000 - elapsed_time.as_micros()).await;
+        if LOOP_US > elapsed_time.as_micros() {
+            Timer::after_micros(LOOP_US - elapsed_time.as_micros()).await;
         }
         prev_time = now_time;
+    }
+}
+
+#[embassy_executor::task]
+async fn bno08x_task(mut uart: Uart<'static, mode::Async>) {
+    let mut bno08x_buf = [0u8; 19];
+
+    let (mut processor, mut parser) = match bno08x_rvc::create(G_BB.borrow()) {
+        Ok((proc, pars)) => (proc, pars),
+        Err(_e) => {
+            error!("Can't create bno08x-rvc");
+            loop {}
+        }
+    };
+
+    loop {
+        let _ = uart.read(&mut bno08x_buf).await;
+        processor.process_slice(&bno08x_buf).unwrap();
+        let _ = parser.worker(|frame| {
+            let yaw = embassy_futures::block_on(G_YAW.lock());
+            yaw.replace(-(frame.as_pretty_frame().yaw.to_radians()));
+        });
     }
 }
 
@@ -969,14 +1021,16 @@ async fn neo_pixel_task(
         neo_pixel.set_colors(dma, &mut neo_pixel_data).await;
 
         loop_count = (loop_count + 1) % LED_COUNT;
-        Timer::after(Duration::from_millis(40)).await;
+        Timer::after(Duration::from_millis(30)).await;
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 struct Settings {
     pub line_strength: f32,
-    pub opp_goal_color: nv1_msg::hub::GoalColor,
+    pub opp_goal_color: GoalColor,
+    pub opencv_goal_blue: nv1_msg::hub::HSV,
+    pub opencv_goal_yellow: nv1_msg::hub::HSV,
 }
 
 fn flash_read(f: &mut Flash<'_, Blocking>) -> Result<Settings, embassy_stm32::flash::Error> {
