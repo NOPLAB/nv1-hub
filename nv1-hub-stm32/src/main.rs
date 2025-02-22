@@ -72,22 +72,22 @@ use panic_halt as _;
 use {defmt_rtt as _, panic_probe as _};
 
 const LINE_OVER_CENTER_THRESHOLD: f32 = 140_f32.to_radians();
-const LOOP_US: u64 = 3000;
+const LOOP_US: u64 = 2000;
 const DEFAULT_SETTINGS: Settings = Settings {
     line_strength: 0.12,
     opp_goal_color: GoalColor::Blue,
     opencv_goal_blue: HSV {
-        h_min: 100,
-        h_max: 120,
+        h_min: 0,
+        h_max: 110,
         s_min: 100,
         s_max: 255,
-        v_min: 100,
+        v_min: 0,
         v_max: 255,
     },
     opencv_goal_yellow: HSV {
         h_min: 0,
-        h_max: 255,
-        s_min: 0,
+        h_max: 110,
+        s_min: 255,
         s_max: 255,
         v_min: 0,
         v_max: 255,
@@ -106,8 +106,8 @@ bind_interrupts!(struct Irqs {
 
 static G_BB: BBBuffer<{ bno08x_rvc::BUFFER_SIZE }> = BBBuffer::new();
 static G_YAW: Mutex<ThreadModeRawMutex, RefCell<f32>> = Mutex::new(RefCell::new(0.0));
-static G_JETSON_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::ToHub> =
-    Mutex::new(nv1_msg::hub::ToHub {
+static G_JETSON_RX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::ToHub>> =
+    Mutex::new(RefCell::new(nv1_msg::hub::ToHub {
         vel: nv1_msg::hub::Movement {
             x: 0.0,
             y: 0.0,
@@ -116,7 +116,7 @@ static G_JETSON_RX: Mutex<ThreadModeRawMutex, nv1_msg::hub::ToHub> =
         kick: false,
         goal_opp: None,
         goal_own: None,
-    });
+    }));
 static G_JETSON_TX: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::hub::ToJetson>> =
     Mutex::new(RefCell::new(nv1_msg::hub::ToJetson {
         sys: nv1_msg::hub::System {
@@ -333,7 +333,7 @@ async fn main(spawner: Spawner) {
 
     // initialize ADC
     let mut adc = Adc::new(p.ADC1);
-    adc.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES480);
+    adc.set_sample_time(embassy_stm32::adc::SampleTime::CYCLES3);
 
     let mut line_s0 = Output::new(p.PB12, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
     let mut line_s1 = Output::new(p.PB13, Level::Low, embassy_stm32::gpio::Speed::VeryHigh);
@@ -670,7 +670,7 @@ async fn main(spawner: Spawner) {
             AdcState::OnGround => {
                 if let Some((x, y)) = on_line {
                     // prev: on Ground, now: on Line
-                    info!("[LINE] Line detected");
+                    // info!("[LINE] Line detected");
 
                     let now_angle = libm::atan2f(y, x);
 
@@ -696,21 +696,27 @@ async fn main(spawner: Spawner) {
                         // prev: on Line, now: out of Center
                         prev_line_state =
                             AdcState::OutOfLineOverCenter(first_angle, first_x, first_y, 0);
-                        info!(
-                            "[LINE] Out of line new_angle: {}, prev_angle: {}",
-                            now_angle, first_angle
-                        );
+                        // info!(
+                        //     "[LINE] Out of line new_angle: {}, prev_angle: {}",
+                        //     now_angle, first_angle
+                        // );
                         Some((-x, -y))
                     } else {
                         // prev: on Line, now: on Line
-                        prev_line_state =
-                            AdcState::OnLine(first_angle, first_x, first_y, counter + 1);
+                        prev_line_state = AdcState::OnLine(first_angle, first_x, first_y, 0);
                         Some((-x, -y))
                     }
                 } else {
                     // prev: on Line, now: on Ground
-                    prev_line_state = AdcState::OnGround;
-                    None
+                    if counter > 50 {
+                        // info!("[LINE] Line lost");
+                        prev_line_state = AdcState::OnGround;
+                        None
+                    } else {
+                        prev_line_state =
+                            AdcState::OnLine(first_angle, first_x, first_y, counter + 1);
+                        Some((-first_x, -first_y))
+                    }
                 }
             }
             AdcState::OutOfLineOverCenter(first_angle, first_x, first_y, counter) => {
@@ -760,12 +766,15 @@ async fn main(spawner: Spawner) {
         let (vel_x, vel_y) = if let Some((line_x, line_y)) = calc_line {
             (line_x * 1.5, line_y * 1.5)
         } else {
-            (received_msg.vel.x * 1.5, received_msg.vel.y * 1.5)
+            (
+                received_msg.borrow().vel.x * 1.5,
+                received_msg.borrow().vel.y * 1.5,
+            )
         };
         // info!("Vel X: {}, Vel Y: {}", vel_x, vel_y);
+        // info!("opp: {}", received_msg.borrow().goal_opp);
 
-        let rotation_target = 0.0;
-        rotation_pid.setpoint(rotation_target);
+        rotation_pid.setpoint(0.0);
         let rotation_pid_result = rotation_pid.next_control_output(yaw);
         let rotation_vel = rotation_pid_result.output;
         let motor1 = wheel_calc1.calculate(vel_x, vel_y, 0.0, rotation_vel) / (2.0 * PI);
@@ -821,8 +830,8 @@ async fn main(spawner: Spawner) {
                 reboot: *reboot.borrow_mut(),
             },
             vel: nv1_msg::hub::Movement {
-                x: received_msg.vel.x,
-                y: received_msg.vel.y,
+                x: received_msg.borrow().vel.x,
+                y: received_msg.borrow().vel.y,
                 angle: yaw,
             },
             sensor: nv1_msg::hub::Sensor {
@@ -886,22 +895,24 @@ async fn uart_jetson_task(uart: Uart<'static, mode::Async>) {
 
     uart_rx.start_uart();
 
+    let mut timeout_cnt = 0;
     loop {
         let mut byte = [0u8; 1];
         let mut msg_with_cobs = [0u8; 64];
-        let mut c = 0;
+        let mut msg_cnt = 0;
         loop {
-            let timeout_res =
-                with_timeout(Duration::from_millis(50), uart_rx.read(&mut byte)).await;
+            let timeout_res = with_timeout(Duration::from_millis(1), uart_rx.read(&mut byte)).await;
             match timeout_res {
                 Ok(receive_res) => match receive_res {
                     Ok(_size) => {
-                        msg_with_cobs[c] = byte[0];
-                        c += 1;
+                        msg_with_cobs[msg_cnt] = byte[0];
+                        msg_cnt += 1;
 
                         if byte[0] == 0 {
                             break;
                         }
+
+                        timeout_cnt = 0;
                     }
                     Err(err) => {
                         error!("[UART Jetson] read error: {:?}", err);
@@ -909,15 +920,7 @@ async fn uart_jetson_task(uart: Uart<'static, mode::Async>) {
                     }
                 },
                 Err(_) => {
-                    // error!("[UART Jetson] timeout");
-
-                    G_JETSON_RX.lock().await.vel = nv1_msg::hub::Movement {
-                        x: 0.0,
-                        y: 0.0,
-                        angle: 0.0,
-                    };
-
-                    G_NEO_PIXEL_DATA.lock().await.jetson_connecting = false;
+                    timeout_cnt += 1;
 
                     break;
                 }
@@ -929,7 +932,7 @@ async fn uart_jetson_task(uart: Uart<'static, mode::Async>) {
                 // info!("Linear Y: {}", msg.vel.y);
                 // info!("Angular Z: {}", msg.vel.angle);
 
-                G_JETSON_RX.lock().await.vel = msg.vel;
+                G_JETSON_RX.lock().await.replace(msg);
 
                 G_NEO_PIXEL_DATA.lock().await.jetson_connecting = true;
             }
@@ -937,6 +940,8 @@ async fn uart_jetson_task(uart: Uart<'static, mode::Async>) {
                 // error!("[UART Jetson] postcard decode error");
             }
         };
+
+        Timer::after(Duration::from_millis(2)).await;
 
         let msg = G_JETSON_TX.lock().await.take();
         match postcard::to_vec_cobs::<nv1_msg::hub::ToJetson, 64>(&msg) {
@@ -954,6 +959,25 @@ async fn uart_jetson_task(uart: Uart<'static, mode::Async>) {
                 error!("[UART Jetson] postcard encode error");
             }
         }
+
+        if timeout_cnt > 100 {
+            // error!("[UART Jetson] timeout");
+
+            G_JETSON_RX.lock().await.replace(nv1_msg::hub::ToHub {
+                vel: nv1_msg::hub::Movement {
+                    x: 0.0,
+                    y: 0.0,
+                    angle: 0.0,
+                },
+                ..Default::default()
+            });
+
+            G_NEO_PIXEL_DATA.lock().await.jetson_connecting = false;
+        } else {
+            G_NEO_PIXEL_DATA.lock().await.jetson_connecting = true;
+        }
+
+        Timer::after(Duration::from_millis(2)).await;
     }
 }
 
