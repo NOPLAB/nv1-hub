@@ -52,7 +52,7 @@ use num_traits::{AsPrimitive, Num};
 use nv1_hub_ui::elements;
 use nv1_hub_ui::elements::Element;
 use nv1_hub_ui::elements::{Slider, Text, Value};
-use nv1_hub_ui::menu::Menu;
+use nv1_hub_ui::menu::{Menu, RobotStatusMenu, RobotStatusMenuOption};
 use nv1_hub_ui::{
     elements::Button,
     menu::{ListMenu, ListMenuOption},
@@ -74,7 +74,9 @@ use {defmt_rtt as _, panic_probe as _};
 const LINE_OVER_CENTER_THRESHOLD: f32 = 140_f32.to_radians();
 const LOOP_US: u64 = 2000;
 const DEFAULT_SETTINGS: Settings = Settings {
-    line_strength: 0.12,
+    line_threshold: 0.12,
+    have_ball_threshold: 800,
+    robot_speed_multiplier: 1.5,
     opp_goal_color: GoalColor::Blue,
     opencv_goal_blue: HSV {
         h_min: 0,
@@ -85,11 +87,11 @@ const DEFAULT_SETTINGS: Settings = Settings {
         v_max: 255,
     },
     opencv_goal_yellow: HSV {
-        h_min: 0,
-        h_max: 110,
-        s_min: 255,
+        h_min: 50,
+        h_max: 120,
+        s_min: 100,
         s_max: 255,
-        v_min: 0,
+        v_min: 100,
         v_max: 255,
     },
 };
@@ -372,12 +374,12 @@ async fn main(spawner: Spawner) {
     let settings = Rc::new(RefCell::new(
         flash_read(&mut f.clone().borrow_mut()).unwrap_or(DEFAULT_SETTINGS),
     ));
-    if settings.borrow_mut().line_strength.is_nan() {
-        settings.borrow_mut().line_strength = 0.12;
+    if settings.borrow_mut().line_threshold.is_nan() {
+        settings.borrow_mut().line_threshold = 0.12;
         flash_write(&mut f.clone().borrow_mut(), &settings.borrow_mut()).unwrap();
     }
 
-    info!("line strength: {}", settings.borrow_mut().line_strength);
+    info!("line strength: {}", settings.borrow_mut().line_threshold);
 
     // UI
     let gpio_ui_toggle = ExtiInput::new(p.PC12, p.EXTI12, Pull::None);
@@ -449,7 +451,7 @@ async fn main(spawner: Spawner) {
 
     let settings_clone = settings.clone();
     let ui_value_coat = Value::new(
-        "Opp",
+        "ATK2",
         "",
         move |value| {
             *value = match settings_clone.as_ref().borrow().opp_goal_color {
@@ -463,7 +465,7 @@ async fn main(spawner: Spawner) {
     let settings_clone = settings.clone();
     let f_clone = f.clone();
     let ui_button_coat_change = Button::new(
-        "Switch Coat",
+        "SW Coat",
         move |pressed| {
             if pressed {
                 let toggle_color = match settings_clone.as_ref().borrow().opp_goal_color {
@@ -477,8 +479,8 @@ async fn main(spawner: Spawner) {
         embedded_graphics::mono_font::ascii::FONT_6X10,
     );
 
-    let line_value = Rc::new(RefCell::new(0.0));
-    let line_value_clone = line_value.clone();
+    let value_line = Rc::new(RefCell::new(0.0));
+    let line_value_clone = value_line.clone();
     let ui_value_line = Value::new(
         "L",
         0.0,
@@ -491,12 +493,53 @@ async fn main(spawner: Spawner) {
     let settings_clone = settings.clone();
     let f_clone = f.clone();
     let ui_slider_line_strength = Slider::new(
-        settings.as_ref().borrow().line_strength,
+        settings.as_ref().borrow().line_threshold,
         0.0,
         1.0,
         0.01,
         move |value| {
-            settings_clone.borrow_mut().line_strength = value;
+            settings_clone.borrow_mut().line_threshold = value;
+            flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
+        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
+    );
+
+    let value_have_ball = Rc::new(RefCell::new(0));
+    let have_ball_value_clone = value_have_ball.clone();
+    let ui_value_have_ball = Value::new(
+        "B",
+        0,
+        move |value| {
+            *value = *have_ball_value_clone.borrow_mut();
+        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
+    );
+
+    let settings_clone = settings.clone();
+    let f_clone = f.clone();
+    let ui_slider_have_ball_threshold = Slider::new(
+        settings.as_ref().borrow().have_ball_threshold,
+        0,
+        2000,
+        50,
+        move |value| {
+            settings_clone.borrow_mut().have_ball_threshold = value;
+            flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
+        },
+        embedded_graphics::mono_font::ascii::FONT_6X10,
+    );
+
+    let ui_text_speed_mul = Text::new("Speed Mul", embedded_graphics::mono_font::ascii::FONT_6X10);
+
+    let settings_clone = settings.clone();
+    let f_clone = f.clone();
+    let ui_slider_robot_speed_multiplier = Slider::new(
+        settings.as_ref().borrow().robot_speed_multiplier,
+        0.0,
+        5.0,
+        0.1,
+        move |value| {
+            settings_clone.borrow_mut().robot_speed_multiplier = value;
             flash_write(&mut f_clone.borrow_mut(), &settings_clone.borrow_mut()).unwrap();
         },
         embedded_graphics::mono_font::ascii::FONT_6X10,
@@ -528,6 +571,10 @@ async fn main(spawner: Spawner) {
         ui_button_coat_change,
         ui_value_line,
         ui_slider_line_strength,
+        ui_value_have_ball,
+        ui_slider_have_ball_threshold,
+        ui_text_speed_mul,
+        ui_slider_robot_speed_multiplier,
         ui_button_settings_reset
     ];
     let menu = menus![
@@ -545,7 +592,11 @@ async fn main(spawner: Spawner) {
                 element_margin: 1,
                 cursor_line_len: 4,
             },
-        )
+        ),
+        RobotStatusMenu::new(RobotStatusMenuOption {
+            position: Point::new(2, 2),
+            size: Size::new(56, 56),
+        })
     ];
 
     let ui_option = HubUIOption {};
@@ -601,6 +652,8 @@ async fn main(spawner: Spawner) {
 
     let mut prev_time = Instant::now();
     loop {
+        let settings = settings.as_ref().borrow().clone();
+
         let yaw = G_YAW.lock().await.clone().take();
 
         let mut adc_line = [0u16; 32];
@@ -663,7 +716,7 @@ async fn main(spawner: Spawner) {
             &adc_line,
             &adc_line_sin,
             &adc_line_cos,
-            settings.as_ref().borrow().line_strength,
+            settings.line_threshold,
         );
 
         let calc_line: Option<(f32, f32)> = match prev_line_state {
@@ -740,7 +793,6 @@ async fn main(spawner: Spawner) {
         };
 
         let adc_line_max = adc_line.into_iter().reduce(f32::max).unwrap_or(0.);
-        line_value.replace(adc_line_max);
         adc_ir.iter_mut().for_each(|x| *x = 4096 - *x);
         let adc_ir = adc_ir
             .iter()
@@ -767,8 +819,8 @@ async fn main(spawner: Spawner) {
             (line_x * 1.5, line_y * 1.5)
         } else {
             (
-                received_msg.borrow().vel.x * 1.5,
-                received_msg.borrow().vel.y * 1.5,
+                received_msg.borrow().vel.x * settings.robot_speed_multiplier,
+                received_msg.borrow().vel.y * settings.robot_speed_multiplier,
             )
         };
         // info!("Vel X: {}, Vel Y: {}", vel_x, vel_y);
@@ -813,14 +865,14 @@ async fn main(spawner: Spawner) {
             }
         };
 
-        let opp_color = match settings.as_ref().borrow().opp_goal_color {
-            GoalColor::Blue => settings.as_ref().borrow().opencv_goal_blue,
-            GoalColor::Yellow => settings.as_ref().borrow().opencv_goal_yellow,
+        let opp_color = match settings.opp_goal_color {
+            GoalColor::Blue => settings.opencv_goal_blue,
+            GoalColor::Yellow => settings.opencv_goal_yellow,
         };
 
-        let own_color = match settings.as_ref().borrow().opp_goal_color {
-            GoalColor::Blue => settings.as_ref().borrow().opencv_goal_yellow,
-            GoalColor::Yellow => settings.as_ref().borrow().opencv_goal_blue,
+        let own_color = match settings.opp_goal_color {
+            GoalColor::Blue => settings.opencv_goal_yellow,
+            GoalColor::Yellow => settings.opencv_goal_blue,
         };
 
         let msg_tx = nv1_msg::hub::ToJetson {
@@ -840,9 +892,8 @@ async fn main(spawner: Spawner) {
                     y: ir_y,
                     strength: 0.0,
                 },
-
                 on_line: on_line.is_some(),
-                have_ball: adc_have_ball < 800,
+                have_ball: adc_have_ball < settings.have_ball_threshold,
             },
             config: nv1_msg::hub::JetsonConfig::OpenCV(nv1_msg::hub::OpenCVConfig {
                 opp_color,
@@ -853,6 +904,10 @@ async fn main(spawner: Spawner) {
 
         G_NEO_PIXEL_DATA.lock().await.ball_dir = ir_angle;
         G_NEO_PIXEL_DATA.lock().await.pause = pause;
+
+        // update UI buf
+        value_line.replace(adc_line_max);
+        value_have_ball.replace(adc_have_ball);
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
@@ -895,7 +950,7 @@ async fn uart_jetson_task(uart: Uart<'static, mode::Async>) {
 
     uart_rx.start_uart();
 
-    let mut timeout_cnt = 0;
+    let mut timeout_cnt = 9999;
     loop {
         let mut byte = [0u8; 1];
         let mut msg_with_cobs = [0u8; 64];
@@ -1074,10 +1129,12 @@ async fn neo_pixel_task(
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 struct Settings {
-    pub line_strength: f32,
+    pub line_threshold: f32,
+    pub have_ball_threshold: u16,
     pub opp_goal_color: GoalColor,
     pub opencv_goal_blue: nv1_msg::hub::HSV,
     pub opencv_goal_yellow: nv1_msg::hub::HSV,
+    pub robot_speed_multiplier: f32,
 }
 
 fn flash_read(f: &mut Flash<'_, Blocking>) -> Result<Settings, embassy_stm32::flash::Error> {
@@ -1088,7 +1145,10 @@ fn flash_read(f: &mut Flash<'_, Blocking>) -> Result<Settings, embassy_stm32::fl
 
     let decoded = match postcard::from_bytes(&buf) {
         Ok(d) => d,
-        Err(_) => Default::default(),
+        Err(_) => {
+            error!("flash read error");
+            DEFAULT_SETTINGS
+        }
     };
 
     Ok(decoded)
