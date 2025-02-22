@@ -777,10 +777,6 @@ async fn main(spawner: Spawner) {
         //     motor1, motor2, motor3, motor4
         // );
 
-        let now_time = Instant::now();
-        let elapsed_time = now_time - prev_time;
-        info!("elapsed time: {}", elapsed_time.as_micros());
-
         let pause = gpio_ui_toggle.is_high();
         let md_msg = if pause {
             nv1_msg::md::ToMD {
@@ -851,7 +847,7 @@ async fn main(spawner: Spawner) {
 
         let now_time = Instant::now();
         let elapsed_time = now_time - prev_time;
-        info!("elapsed time: {}", elapsed_time.as_micros());
+        // info!("elapsed time: {}", elapsed_time.as_micros());
         if LOOP_US > elapsed_time.as_micros() {
             Timer::after_micros(LOOP_US - elapsed_time.as_micros()).await;
         }
