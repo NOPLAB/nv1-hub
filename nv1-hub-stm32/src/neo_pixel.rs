@@ -2,56 +2,7 @@ use embassy_stm32::{
     time::Hertz,
     timer::{simple_pwm::SimplePwm, Ch1Dma, GeneralInstance4Channel},
 };
-use embedded_hal_compat::eh1_0::{digital::OutputPin, pwm::SetDutyCycle};
 use rgb::RGB8;
-
-pub struct NeoPixel<P>
-where
-    P: OutputPin,
-{
-    pin: P,
-}
-
-impl<P> NeoPixel<P>
-where
-    P: OutputPin,
-{
-    pub fn new(pin: P) -> Self {
-        Self { pin: pin }
-    }
-
-    pub fn write_byte(&mut self, mut data: u8) {
-        for _ in 0..8 {
-            if data & 0x80 != 0 {
-                // 580-1000 ns
-                self.pin.set_high().ok();
-                cortex_m::asm::delay(6);
-
-                // 580-1000 ns
-                self.pin.set_low().ok();
-                cortex_m::asm::delay(6);
-            } else {
-                // 220-380 ns
-                self.pin.set_high().ok();
-                cortex_m::asm::delay(1);
-
-                // 580-1000 ns
-                self.pin.set_low().ok();
-                cortex_m::asm::delay(6);
-            }
-
-            data <<= 1;
-        }
-    }
-
-    pub fn write(&mut self, data: &[RGB8]) {
-        for color in data {
-            self.write_byte(color.g);
-            self.write_byte(color.r);
-            self.write_byte(color.b);
-        }
-    }
-}
 
 const NEO_PIXEL_NUM: usize = 32;
 
