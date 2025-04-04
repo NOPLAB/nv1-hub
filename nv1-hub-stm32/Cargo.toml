@@ -35,7 +35,7 @@ embassy-time = { version = "0.4.0", features = ["tick-hz-32_768"] }
 embedded-alloc = "0.6.0"
 libm = "0.2.8"
 panic-halt = "0.2.0"
-panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
+panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
 pid = "4.0.0"
 ssd1306 = "0.8.4"
 embedded-graphics = "0.8.1"
